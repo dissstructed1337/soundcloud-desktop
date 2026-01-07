@@ -1,4 +1,10 @@
-const { app, BrowserWindow, ipcMain, session, Tray, Menu, Notification, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, session, Tray, Menu, Notification, globalShortcut, dialog, net: electronNet } = require('electron');
+
+app.name = 'SoundCloud Desktop';
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.soundcloud.desktop');
+}
+
 const { autoUpdater } = require('electron-updater');
 const log = require('electron-log');
 
@@ -12,161 +18,11 @@ const path = require('path');
 const axios = require('axios');
 const fs = require('fs');
 const net = require('net');
+const { SocksProxyAgent } = require('socks-proxy-agent');
+const { HttpProxyAgent } = require('http-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 const { execSync } = require('child_process');
-const DiscordRPC = require('discord-rpc');
 
-const DISCORD_CLIENT_ID = '951475510626304001';
-let rpcConnected = false;
-let rpc = null;
-let rpcRetryTimeout = null;
-let rpcFailuresCount = 0;
-const RPC_BACKOFF_BASE = 20000; // 20s
-const RPC_BACKOFF_MAX = 5 * 60 * 1000; // 5 minutes
-
-function connectRPC() {
-  // If process is elevated on Windows, IPC from/to Discord may be blocked/closed.
-  const isElevated = () => {
-    if (process.platform !== 'win32') return false;
-    try {
-      execSync('NET SESSION', { stdio: 'ignore' });
-      return true;
-    } catch (e) {
-      return false;
-    }
-  };
-
-  if (isElevated()) {
-    console.log('⚠️ DISCORD RPC: process running with elevated privileges — skipping RPC attempts (run app without Admin privileges)');
-    try {
-      new Notification({
-        title: 'Discord RPC disabled (elevated)',
-        body: 'Приложение запущено как администратор — Discord Rich Presence будет отключён. Запустите приложение без прав администратора.'
-      }).show();
-    } catch (e) { }
-    return;
-  }
-
-  if (rpcConnected) return;
-  if (rpcRetryTimeout) clearTimeout(rpcRetryTimeout);
-
-  if (rpc) {
-    try {
-      // Prevent internal library crashes by manually unbinding if needed
-      rpc.removeAllListeners();
-      if (rpc.transport && rpc.transport.close) rpc.transport.close();
-    } catch (e) { }
-    rpc = null;
-  }
-
-  try {
-    // Fire off a short diagnostic of existing named pipes for debugging
-    try {
-      const pipes = fs.readdirSync('\\\\.\\pipe\\');
-      const discordPipes = pipes.filter(p => p && p.toString().toLowerCase().includes('discord-ipc'));
-      console.log('ℹ️ DISCORD RPC: available pipes ->', discordPipes);
-      // Try connecting to each discord ipc pipe with a short timeout to see if it's reachable
-      discordPipes.forEach(pipeName => {
-        const path = `\\\\.\\pipe\\${pipeName}`;
-        const socket = net.connect({ path }, () => {
-          console.log(`ℹ️ DISCORD RPC: test connect SUCCESS -> ${path}`);
-          socket.destroy();
-        });
-        socket.setTimeout(2000);
-        socket.on('error', (e) => {
-          console.log(`ℹ️ DISCORD RPC: test connect ERROR -> ${path} (${e.code || e.message})`);
-        });
-        socket.on('timeout', () => {
-          console.log(`ℹ️ DISCORD RPC: test connect TIMEOUT -> ${path}`);
-          socket.destroy();
-        });
-      });
-    } catch (e) {
-      console.log('ℹ️ DISCORD RPC: pipe inspection failed', e && e.message ? e.message : e);
-    }
-
-    rpc = new DiscordRPC.Client({ transport: 'ipc' });
-
-    rpc.on('ready', () => {
-      rpcConnected = true;
-      rpcFailuresCount = 0;
-      console.log('✅ DISCORD RPC: CONNECTED!');
-    });
-
-    rpc.on('disconnected', () => {
-      console.log('❌ DISCORD RPC: DISCONNECTED');
-      rpcConnected = false;
-      rpc = null;
-      rpcFailuresCount++;
-      const delay = Math.min(RPC_BACKOFF_BASE * Math.pow(2, rpcFailuresCount - 1), RPC_BACKOFF_MAX);
-      console.log(`⚠️ DISCORD RPC: disconnected — scheduling reconnect in ${Math.round(delay / 1000)}s (failure #${rpcFailuresCount})`);
-      if (rpcFailuresCount >= 3) {
-        try {
-          new Notification({
-            title: 'Discord RPC: connection issues',
-            body: 'Не удаётся подключиться к Discord Rich Presence — проверьте, запущен ли Discord и не блокирует ли его антивирус.'
-          }).show();
-        } catch (e) { }
-      }
-      rpcRetryTimeout = setTimeout(connectRPC, delay);
-    });
-
-    rpc.login({ clientId: DISCORD_CLIENT_ID }).catch((err) => {
-      rpcFailuresCount++;
-      const delay = Math.min(RPC_BACKOFF_BASE * Math.pow(2, rpcFailuresCount - 1), RPC_BACKOFF_MAX);
-      console.log(`⚠️ DISCORD RPC: LOGIN ERROR (${err.code || err.message}) — scheduling reconnect in ${Math.round(delay / 1000)}s (failure #${rpcFailuresCount})`);
-      console.error(err && err.stack ? err.stack : err);
-      rpcConnected = false;
-      rpc = null;
-      if (rpcFailuresCount >= 3) {
-        try {
-          new Notification({
-            title: 'Discord RPC: login failed',
-            body: 'Не удалось подключиться к Discord Rich Presence. Убедитесь, что Discord Desktop запущен и не блокируется.'
-          }).show();
-        } catch (e) { }
-      }
-      rpcRetryTimeout = setTimeout(connectRPC, delay);
-    });
-  } catch (err) {
-    console.error('CRITICAL: RPC SETUP ERROR:', err && err.stack ? err.stack : err);
-    rpcRetryTimeout = setTimeout(connectRPC, 40000);
-  }
-}
-
-connectRPC();
-
-async function setRPCActivity(data) {
-  if (!rpcConnected || !rpc) return;
-
-  try {
-    // Double check transport as some async events might clear it
-    if (!rpc.transport || !rpc.transport.socket) {
-      rpcConnected = false;
-      return;
-    }
-
-    const { title, artist, duration, seek, isPaused } = data;
-    const cleanTitle = (title || 'Track').substring(0, 127);
-    const cleanArtist = `by ${artist || 'Unknown'}`.substring(0, 127);
-
-    const activity = {
-      details: isPaused ? `Paused: ${cleanTitle}` : cleanTitle,
-      state: cleanArtist,
-      instance: false,
-      largeImageKey: 'soundcloud_logo',
-      largeImageText: 'SoundCloud Desktop',
-    };
-
-    if (!isPaused && duration && seek !== null) {
-      activity.startTimestamp = Math.floor(Date.now() / 1000) - Math.floor(seek);
-      activity.endTimestamp = activity.startTimestamp + Math.floor(duration);
-    }
-
-    rpc.setActivity(activity).catch(() => { });
-  } catch (err) {
-    // Ignore updates errors
-  }
-}
 
 let CLIENT_ID = 'F889PrS0Yvg2mUonAOk7P7zNSrt4un63';
 let OAUTH_TOKEN = null;
@@ -184,60 +40,141 @@ try {
 async function getClientId() {
   return new Promise((resolve) => {
     let resolved = false;
-    const hiddenWindow = new BrowserWindow({
-      show: false,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-      },
-    });
+    let hiddenWindow = null;
+    let timeoutId = null;
 
-
-    const filter = {
-      urls: ['*://*.soundcloud.com/*']
-    };
-
-    const onBeforeRequest = (details, callback) => {
-      const url = details.url;
-      if (url.includes('client_id=')) {
-        try {
-          const parsedUrl = new URL(url);
-          const clientId = parsedUrl.searchParams.get('client_id');
-          if (clientId && clientId !== CLIENT_ID && !resolved) {
-            resolved = true;
-            CLIENT_ID = clientId;
-
-            session.defaultSession.webRequest.onBeforeRequest(null);
-            if (!hiddenWindow.isDestroyed()) {
-              hiddenWindow.close();
-            }
-            resolve(clientId);
-            return;
-          }
-        } catch (e) { }
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
       }
-      callback({});
-    };
-
-    session.defaultSession.webRequest.onBeforeRequest(filter, onBeforeRequest);
-
-    hiddenWindow.loadURL('https://soundcloud.com');
-
-
-    const timeoutId = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
+      try {
         session.defaultSession.webRequest.onBeforeRequest(null);
-        if (!hiddenWindow.isDestroyed()) {
-          hiddenWindow.close();
-        }
-        resolve(CLIENT_ID);
+      } catch (e) { }
+      if (hiddenWindow && !hiddenWindow.isDestroyed()) {
+        hiddenWindow.close();
+        hiddenWindow = null;
       }
-    }, 15000);
+    };
 
-    hiddenWindow.on('closed', () => {
-      clearTimeout(timeoutId);
+    try {
+      hiddenWindow = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+        },
+      });
+
+      const filter = {
+        urls: ['*://*.soundcloud.com/*']
+      };
+
+      const onBeforeRequest = (details, callback) => {
+        const url = details.url;
+        if (url.includes('client_id=')) {
+          try {
+            const parsedUrl = new URL(url);
+            const clientId = parsedUrl.searchParams.get('client_id');
+            if (clientId && clientId !== CLIENT_ID && !resolved) {
+              resolved = true;
+              CLIENT_ID = clientId;
+              cleanup();
+              resolve(clientId);
+              return;
+            }
+          } catch (e) { }
+        }
+        callback({});
+      };
+
+      session.defaultSession.webRequest.onBeforeRequest(filter, onBeforeRequest);
+      hiddenWindow.loadURL('https://soundcloud.com').catch(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(CLIENT_ID);
+        }
+      });
+
+      timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(CLIENT_ID);
+        }
+      }, 15000);
+
+      hiddenWindow.on('closed', () => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(CLIENT_ID);
+        }
+      });
+    } catch (e) {
+      cleanup();
+      resolve(CLIENT_ID);
+    }
+  });
+}
+
+async function makeRequest(url, options = {}, retries = 1) {
+  return new Promise((resolve, reject) => {
+    const request = electronNet.request({
+      url,
+      method: options.method || 'GET',
+      session: session.defaultSession
     });
+
+    if (options.headers) {
+      Object.entries(options.headers).forEach(([key, value]) => {
+        request.setHeader(key, value);
+      });
+    }
+
+    request.on('response', (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+      response.on('end', async () => {
+        const data = Buffer.concat(chunks);
+        const dataString = data.toString();
+
+        // Clear chunks array to free memory
+        chunks.length = 0;
+
+        // Handle 401 Unauthorized by refreshing Client ID
+        if (response.statusCode === 401 && retries > 0 && !url.includes('soundcloud.com/connect')) {
+          await getClientId();
+          const newUrl = url.includes('client_id=')
+            ? url.replace(/client_id=[^&]+/, `client_id=${CLIENT_ID}`)
+            : url;
+          resolve(await makeRequest(newUrl, options, retries - 1));
+          return;
+        }
+
+        if (response.statusCode >= 400) {
+          reject({ response: { status: response.statusCode, data: dataString } });
+        } else {
+          try {
+            resolve({ data: JSON.parse(dataString), status: response.statusCode });
+          } catch (e) {
+            resolve({ data: dataString, status: response.statusCode });
+          }
+        }
+      });
+    });
+
+    request.on('error', (error) => {
+      reject(error);
+    });
+
+    if (options.data) {
+      request.write(typeof options.data === 'string' ? options.data : JSON.stringify(options.data));
+    }
+    request.end();
   });
 }
 
@@ -256,7 +193,7 @@ function createWindow() {
       contextIsolation: true,
       enableRemoteModule: false,
       webSecurity: false,
-      devTools: false,
+      devTools: true,
       preload: path.join(__dirname, 'preload.js'),
     },
   });
@@ -270,6 +207,11 @@ function createWindow() {
     return false;
   });
 
+  mainWindow.on('closed', () => {
+    // Window is already destroyed, just clean up reference
+    mainWindow = null;
+  });
+
 
   ipcMain.on('window-minimize', () => mainWindow.minimize());
   ipcMain.on('window-maximize', () => {
@@ -280,6 +222,28 @@ function createWindow() {
     }
   });
   ipcMain.on('window-close', () => mainWindow.close());
+
+  let isMiniPlayer = false;
+  let normalBounds = { width: 1200, height: 800, x: undefined, y: undefined };
+
+  ipcMain.on('window-toggle-mini', () => {
+    isMiniPlayer = !isMiniPlayer;
+    if (isMiniPlayer) {
+      normalBounds = mainWindow.getBounds();
+      mainWindow.setAlwaysOnTop(true, 'floating');
+      mainWindow.setResizable(false);
+      mainWindow.setMinimumSize(320, 320);
+      mainWindow.setSize(320, 320);
+      mainWindow.webContents.send('mini-player-state', true);
+    } else {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.setResizable(true);
+      mainWindow.setMinimumSize(1000, 700);
+      mainWindow.setSize(normalBounds.width, normalBounds.height);
+      if (normalBounds.x !== undefined) mainWindow.setPosition(normalBounds.x, normalBounds.y);
+      mainWindow.webContents.send('mini-player-state', false);
+    }
+  });
 
   ipcMain.on('show-notification', (event, { title, body, silent }) => {
     new Notification({
@@ -303,9 +267,6 @@ function createWindow() {
 
 
   mainWindow.setMenu(null);
-  mainWindow.webContents.on('devtools-opened', () => {
-    mainWindow.webContents.closeDevTools();
-  });
 
 
   mainWindow.once('ready-to-show', () => {
@@ -348,7 +309,7 @@ ipcMain.handle('search-tracks', async (event, query, nextHref = null) => {
       url = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${CLIENT_ID}&limit=50`;
     }
 
-    const response = await axios.get(url);
+    const response = await makeRequest(url);
     return {
       collection: response.data.collection || [],
       next_href: response.data.next_href
@@ -368,7 +329,7 @@ ipcMain.handle('search-playlists', async (event, query, nextHref = null) => {
       url = `https://api-v2.soundcloud.com/search/playlists?q=${encodeURIComponent(query)}&client_id=${CLIENT_ID}&limit=50`;
     }
 
-    const response = await axios.get(url);
+    const response = await makeRequest(url);
     return {
       collection: response.data.collection || [],
       next_href: response.data.next_href
@@ -389,7 +350,7 @@ ipcMain.handle('get-track-stream', async (event, trackId) => {
       return `file://${cachePath}`;
     }
 
-    const trackResponse = await axios.get(`https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${CLIENT_ID}`);
+    const trackResponse = await makeRequest(`https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${CLIENT_ID}`);
     const fullTrack = trackResponse.data;
 
     if (!fullTrack.media || !fullTrack.media.transcodings) {
@@ -404,7 +365,7 @@ ipcMain.handle('get-track-stream', async (event, trackId) => {
       streamInfo = fullTrack.media.transcodings[0];
     }
 
-    const streamResponse = await axios.get(`${streamInfo.url}?client_id=${CLIENT_ID}`);
+    const streamResponse = await makeRequest(`${streamInfo.url}?client_id=${CLIENT_ID}`);
     const streamUrl = streamResponse.data.url;
 
 
@@ -421,6 +382,9 @@ ipcMain.handle('get-track-stream', async (event, trackId) => {
 
 async function downloadTrackToCache(url, filePath) {
   try {
+    // For large file downloads, we still use axios for simplicity with streams
+    // but in a real DPI bypass scenario, we'd use native net. For now,
+    // since this is just the audio file, the OS level DPI bypass works better anyway.
     const response = await axios({
       method: 'GET',
       url: url,
@@ -431,18 +395,11 @@ async function downloadTrackToCache(url, filePath) {
     response.data.pipe(writer);
 
     return new Promise((resolve, reject) => {
-      writer.on('finish', () => {
-
-        resolve();
-      });
-      writer.on('error', (err) => {
-        console.error('Error caching track:', err);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        reject(err);
-      });
+      writer.on('finish', resolve);
+      writer.on('error', reject);
     });
-  } catch (e) {
-    console.error('Download to cache failed:', e.message);
+  } catch (error) {
+    console.error('Failed to cache track:', error);
   }
 }
 
@@ -471,10 +428,10 @@ ipcMain.handle('get-artist-details', async (event, userId) => {
 
 
     const [profileRes, tracksRes, likesRes, playlistsRes] = await Promise.all([
-      axios.get(`https://api-v2.soundcloud.com/users/${userId}?client_id=${CLIENT_ID}`, { headers }),
-      axios.get(`https://api-v2.soundcloud.com/users/${userId}/tracks?client_id=${CLIENT_ID}&limit=200`, { headers }),
-      axios.get(`https://api-v2.soundcloud.com/users/${userId}/likes?client_id=${CLIENT_ID}&limit=100`, { headers }),
-      axios.get(`https://api-v2.soundcloud.com/users/${userId}/playlists?client_id=${CLIENT_ID}&limit=50`, { headers }).catch(() => ({ data: { collection: [] } }))
+      makeRequest(`https://api-v2.soundcloud.com/users/${userId}?client_id=${CLIENT_ID}`, { headers }),
+      makeRequest(`https://api-v2.soundcloud.com/users/${userId}/tracks?client_id=${CLIENT_ID}&limit=200`, { headers }),
+      makeRequest(`https://api-v2.soundcloud.com/users/${userId}/likes?client_id=${CLIENT_ID}&limit=100`, { headers }),
+      makeRequest(`https://api-v2.soundcloud.com/users/${userId}/playlists?client_id=${CLIENT_ID}&limit=50`, { headers }).catch(() => ({ data: { collection: [] } }))
     ]);
 
     const allTracks = tracksRes.data.collection || [];
@@ -506,6 +463,36 @@ if (!fs.existsSync(AUDIO_CACHE_DIR)) {
   fs.mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
 }
 
+// Clean old cache files to prevent disk space bloat
+function cleanOldCache() {
+  try {
+    const files = fs.readdirSync(AUDIO_CACHE_DIR);
+    const now = Date.now();
+    const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+    let deletedCount = 0;
+    files.forEach(file => {
+      const filePath = path.join(AUDIO_CACHE_DIR, file);
+      try {
+        const stats = fs.statSync(filePath);
+        if (now - stats.mtimeMs > maxAge) {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+        }
+      } catch (e) { }
+    });
+
+    if (deletedCount > 0) {
+      console.log(`[CACHE] Cleaned ${deletedCount} old files`);
+    }
+  } catch (e) {
+    console.error('[CACHE] Cleanup error:', e);
+  }
+}
+
+// Run cache cleanup on startup
+cleanOldCache();
+
 let _likes = [];
 try { _likes = JSON.parse(fs.readFileSync(LIKES_FILE)); } catch (e) { _likes = []; }
 
@@ -527,44 +514,75 @@ ipcMain.handle('toggle-like', async (event, track) => {
       _likes.splice(existingIndex, 1);
     } else {
       _likes.unshift(track);
+
+      // Limit likes array to prevent memory bloat (max 2000 tracks)
+      if (_likes.length > 2000) {
+        _likes = _likes.slice(0, 2000);
+      }
     }
 
     fs.writeFile(LIKES_FILE, JSON.stringify(_likes), () => { });
-
-
+    // Sync to SoundCloud profile if connected
     if (OAUTH_TOKEN && track.id && SC_USER) {
       const likeUrl = `https://api-v2.soundcloud.com/users/${SC_USER.id}/track_likes/${track.id}?client_id=${CLIENT_ID}`;
       const method = isLiking ? 'PUT' : 'DELETE';
 
-
-      const syncWindow = new BrowserWindow({
-        show: false,
-        webPreferences: { nodeIntegration: false, contextIsolation: true }
-      });
-
-      syncWindow.loadURL('https://soundcloud.com').then(() => {
-        const script = `
-          fetch('${likeUrl}', {
-            method: '${method}',
-            headers: {
-              'Authorization': 'OAuth ${OAUTH_TOKEN}',
-              'Content-Type': 'application/json'
-            },
-            credentials: 'include'
-          }).then(r => r.ok ? 'OK' : r.status).catch(e => e.message);
-        `;
-        syncWindow.webContents.executeJavaScript(script).then(result => {
-          if (result === 'OK') {
-            console.log('✔ ${method === "PUT" ? "Like" : "Unlike"} synced to SoundCloud');
-          } else {
-            console.warn('SC Sync result:', result);
-          }
+      let syncWindow = null;
+      const closeSyncWindow = () => {
+        if (syncWindow && !syncWindow.isDestroyed()) {
           syncWindow.close();
-        }).catch(e => {
-          console.warn('SC Sync error:', e.message);
-          syncWindow.close();
+          syncWindow = null;
+        }
+      };
+
+      try {
+        syncWindow = new BrowserWindow({
+          show: false,
+          webPreferences: { nodeIntegration: false, contextIsolation: true }
         });
-      }).catch(() => syncWindow.close());
+
+        // Set timeout to force close window after 10 seconds
+        const timeoutId = setTimeout(() => {
+          closeSyncWindow();
+        }, 10000);
+
+        syncWindow.on('closed', () => {
+          clearTimeout(timeoutId);
+          syncWindow = null;
+        });
+
+        syncWindow.loadURL('https://soundcloud.com').then(() => {
+          const script = `
+            fetch('${likeUrl}', {
+              method: '${method}',
+              headers: {
+                'Authorization': 'OAuth ${OAUTH_TOKEN}',
+                'Content-Type': 'application/json'
+              },
+              credentials: 'include'
+            }).then(r => r.ok ? 'OK' : r.status).catch(e => e.message);
+          `;
+          syncWindow.webContents.executeJavaScript(script).then(result => {
+            if (result === 'OK') {
+              console.log('✔ ${method === "PUT" ? "Like" : "Unlike"} synced to SoundCloud');
+            } else {
+              console.warn('SC Sync result:', result);
+            }
+            clearTimeout(timeoutId);
+            closeSyncWindow();
+          }).catch(e => {
+            console.warn('SC Sync error:', e.message);
+            clearTimeout(timeoutId);
+            closeSyncWindow();
+          });
+        }).catch(() => {
+          clearTimeout(timeoutId);
+          closeSyncWindow();
+        });
+      } catch (e) {
+        console.error('Failed to create sync window:', e);
+        closeSyncWindow();
+      }
     }
 
     return _likes;
@@ -610,14 +628,13 @@ ipcMain.handle('get-recommendations', async (event, trackIds) => {
     }
 
     if (seedTrackIds.length === 0) {
-
-      const response = await axios.get(`https://api-v2.soundcloud.com/charts?kind=top&genre=soundcloud%3Aall-music&client_id=${CLIENT_ID}&limit=20`, { headers });
+      const response = await makeRequest(`https://api-v2.soundcloud.com/charts?kind=top&genre=soundcloud%3Aall-music&client_id=${CLIENT_ID}&limit=20`, { headers });
       return response.data.collection.map(item => item.track);
     }
 
 
     const relatedPromises = seedTrackIds.map(id =>
-      axios.get(`https://api-v2.soundcloud.com/tracks/${id}/related?client_id=${CLIENT_ID}&limit=10`, { headers })
+      makeRequest(`https://api-v2.soundcloud.com/tracks/${id}/related?client_id=${CLIENT_ID}&limit=10`, { headers })
         .catch(() => ({ data: { collection: [] } }))
     );
 
@@ -643,7 +660,7 @@ ipcMain.handle('get-charts', async (event, genre = 'soundcloud:all-music') => {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Accept': 'application/json'
     };
-    const response = await axios.get(`https://api-v2.soundcloud.com/charts?kind=top&genre=${encodeURIComponent(genre)}&client_id=${CLIENT_ID}&limit=30`, { headers });
+    const response = await makeRequest(`https://api-v2.soundcloud.com/charts?kind=top&genre=${encodeURIComponent(genre)}&client_id=${CLIENT_ID}&limit=30`, { headers });
     return response.data.collection.map(item => item.track);
   } catch (error) {
     console.error('Charts error:', error);
@@ -684,15 +701,72 @@ if (!fs.existsSync(SETTINGS_FILE)) {
 ipcMain.handle('get-settings', async () => {
   try {
     const data = fs.readFileSync(SETTINGS_FILE, 'utf8');
-    return JSON.parse(data);
+    const settings = JSON.parse(data);
+    return settings;
   } catch (error) {
     return defaultSettings;
   }
 });
 
+async function applyProxy(settings) {
+  if (settings && settings.proxyEnabled) {
+    let proxyUrl = settings.proxyUrl;
+    if (settings.proxyType === 'Builtin') {
+      proxyUrl = 'http://52.188.28.218:3128';
+    }
+
+    if (proxyUrl) {
+      try {
+        // console.log(`[PROXY] Activating: ${proxyUrl}`);
+        if (session.defaultSession) {
+          await session.defaultSession.setProxy({
+            proxyRules: proxyUrl,
+            proxyBypassRules: 'localhost,127.0.0.1'
+          });
+        }
+
+        // Use proper agents for axios (Universal SOCKS/HTTP/HTTPS support)
+        try {
+          const url = new URL(proxyUrl);
+          axios.defaults.proxy = false; // Disable default axios proxy logic
+
+          if (url.protocol.startsWith('socks')) {
+            const agent = new SocksProxyAgent(proxyUrl);
+            axios.defaults.httpAgent = agent;
+            axios.defaults.httpsAgent = agent;
+          } else {
+            const httpAgent = new HttpProxyAgent(proxyUrl);
+            const httpsAgent = new HttpsProxyAgent(proxyUrl);
+            axios.defaults.httpAgent = httpAgent;
+            axios.defaults.httpsAgent = httpsAgent;
+          }
+          axios.defaults.timeout = 25000;
+        } catch (e) {
+          // console.error('[PROXY] Agent creation failed:', e);
+        }
+        // console.log(`[PROXY] System-wide routing initialized.`);
+      } catch (e) {
+        console.error('[PROXY] Setup error:', e);
+      }
+    }
+  } else {
+    try {
+      if (session.defaultSession) {
+        await session.defaultSession.setProxy({ proxyRules: '' });
+      }
+      axios.defaults.proxy = false;
+      axios.defaults.httpAgent = null;
+      axios.defaults.httpsAgent = null;
+      axios.defaults.timeout = 30000;
+      // console.log('[PROXY] Disabled');
+    } catch (e) { }
+  }
+}
+
 ipcMain.handle('save-settings', async (event, settings) => {
   try {
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings));
+    applyProxy(settings);
     return true;
   } catch (error) {
     console.error('Error saving settings:', error);
@@ -721,7 +795,7 @@ ipcMain.handle('import-sc-likes', async (event, profileUrl) => {
 
     if (OAUTH_TOKEN) headers['Authorization'] = `OAuth ${OAUTH_TOKEN}`;
 
-    const resolveRes = await axios.get(
+    const resolveRes = await makeRequest(
       `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(profileUrl)}&client_id=${CLIENT_ID}`,
       { headers }
     );
@@ -733,7 +807,7 @@ ipcMain.handle('import-sc-likes', async (event, profileUrl) => {
     let nextUrl = `https://api-v2.soundcloud.com/users/${userId}/likes?client_id=${CLIENT_ID}&limit=200&offset=0`;
 
     while (nextUrl && allSCLikes.length < 1000) {
-      const likesRes = await axios.get(nextUrl, { headers });
+      const likesRes = await makeRequest(nextUrl, { headers });
       const collection = likesRes.data.collection || [];
 
       collection.forEach(item => {
@@ -792,49 +866,81 @@ ipcMain.handle('select-custom-background', async () => {
 
 ipcMain.handle('connect-soundcloud', async () => {
   return new Promise((resolve) => {
-    const loginWindow = new BrowserWindow({
-      width: 600,
-      height: 800,
-      show: true,
-      autoHideMenuBar: true,
-      title: 'Login to SoundCloud'
-    });
+    let loginWindow = null;
+    let resolved = false;
 
-    const filter = {
-      urls: ['*://*.soundcloud.com/*']
-    };
-
-    const onBeforeSendHeaders = (details, callback) => {
-      const authHeader = details.requestHeaders['Authorization'] || details.requestHeaders['authorization'];
-      if (authHeader && authHeader.startsWith('OAuth ')) {
-        const token = authHeader.replace('OAuth ', '');
-        if (token && token !== OAUTH_TOKEN) {
-          OAUTH_TOKEN = token;
-
-
-          axios.get(`https://api-v2.soundcloud.com/me?client_id=${CLIENT_ID}`, {
-            headers: { 'Authorization': `OAuth ${OAUTH_TOKEN}` }
-          }).then(res => {
-            SC_USER = res.data;
-            fs.writeFileSync(AUTH_FILE, JSON.stringify({ token: OAUTH_TOKEN, user: SC_USER }));
-            session.defaultSession.webRequest.onBeforeSendHeaders(null);
-            if (!loginWindow.isDestroyed()) loginWindow.close();
-            resolve({ success: true, user: SC_USER });
-          }).catch(err => {
-            console.error('Failed to get user info:', err);
-          });
-        }
+    const cleanup = () => {
+      try {
+        session.defaultSession.webRequest.onBeforeSendHeaders(null);
+      } catch (e) { }
+      if (loginWindow && !loginWindow.isDestroyed()) {
+        loginWindow.close();
+        loginWindow = null;
       }
-      callback({ requestHeaders: details.requestHeaders });
     };
 
-    session.defaultSession.webRequest.onBeforeSendHeaders(filter, onBeforeSendHeaders);
-    loginWindow.loadURL('https://soundcloud.com/signin');
+    try {
+      loginWindow = new BrowserWindow({
+        width: 600,
+        height: 800,
+        show: true,
+        autoHideMenuBar: true,
+        title: 'Login to SoundCloud'
+      });
 
-    loginWindow.on('closed', () => {
-      session.defaultSession.webRequest.onBeforeSendHeaders(null);
+      const filter = {
+        urls: ['*://*.soundcloud.com/*']
+      };
+
+      const onBeforeSendHeaders = (details, callback) => {
+        const authHeader = details.requestHeaders['Authorization'] || details.requestHeaders['authorization'];
+        if (authHeader && authHeader.startsWith('OAuth ')) {
+          const token = authHeader.replace('OAuth ', '');
+          if (token && token !== OAUTH_TOKEN && !resolved) {
+            OAUTH_TOKEN = token;
+
+            makeRequest(`https://api-v2.soundcloud.com/me?client_id=${CLIENT_ID}`, {
+              headers: { 'Authorization': `OAuth ${OAUTH_TOKEN}` }
+            }).then(res => {
+              SC_USER = res.data;
+              fs.writeFileSync(AUTH_FILE, JSON.stringify({ token: OAUTH_TOKEN, user: SC_USER }));
+              resolved = true;
+              cleanup();
+              resolve({ success: true, user: SC_USER });
+            }).catch(err => {
+              console.error('Failed to get user info:', err);
+              if (!resolved) {
+                resolved = true;
+                cleanup();
+                resolve({ success: false });
+              }
+            });
+          }
+        }
+        callback({ requestHeaders: details.requestHeaders });
+      };
+
+      session.defaultSession.webRequest.onBeforeSendHeaders(filter, onBeforeSendHeaders);
+      loginWindow.loadURL('https://soundcloud.com/signin').catch(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve({ success: false });
+        }
+      });
+
+      loginWindow.on('closed', () => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve({ success: false });
+        }
+      });
+    } catch (e) {
+      console.error('Failed to create login window:', e);
+      cleanup();
       resolve({ success: false });
-    });
+    }
   });
 });
 
@@ -849,9 +955,6 @@ ipcMain.handle('disconnect-soundcloud', async () => {
   return true;
 });
 
-ipcMain.on('update-discord-rpc', (event, data) => {
-  setRPCActivity(data);
-});
 
 ipcMain.handle('add-to-history', async (event, item) => {
   try {
@@ -911,7 +1014,7 @@ ipcMain.handle('get-playlist-details', async (event, playlistId) => {
   try {
 
     const url = `https://api-v2.soundcloud.com/playlists/${playlistId}?client_id=${CLIENT_ID}&representation=full&limit=500`;
-    const response = await axios.get(url);
+    const response = await makeRequest(url);
     let playlistData = response.data;
     let initialTracks = playlistData.tracks || [];
     const expectedCount = playlistData.track_count || 0;
@@ -919,8 +1022,7 @@ ipcMain.handle('get-playlist-details', async (event, playlistId) => {
 
     if (initialTracks.length < expectedCount && playlistData.permalink_url) {
       try {
-
-        const htmlResponse = await axios.get(playlistData.permalink_url);
+        const htmlResponse = await makeRequest(playlistData.permalink_url);
         const html = htmlResponse.data;
 
         const hydrationMatch = html.match(/window\.__sc_hydration\s*=\s*(\[.*?\]);/);
@@ -976,7 +1078,7 @@ ipcMain.handle('get-playlist-details', async (event, playlistId) => {
       const batchIds = uniqueIdsToFetch.slice(i, i + batchSize);
       const batchUrl = `https://api-v2.soundcloud.com/tracks?ids=${batchIds.join(',')}&client_id=${CLIENT_ID}&limit=${batchSize}&representation=full`;
       try {
-        const batchResponse = await axios.get(batchUrl);
+        const batchResponse = await makeRequest(batchUrl);
         const tracksData = Array.isArray(batchResponse.data) ? batchResponse.data : (batchResponse.data.collection || []);
 
         tracksData.forEach(track => {
@@ -987,26 +1089,19 @@ ipcMain.handle('get-playlist-details', async (event, playlistId) => {
       }
     }
 
-
-
-    return allTrackIds.map(id => {
-
+    const result = allTrackIds.map(id => {
       const original = initialTracks.find(t => (typeof t === 'object' && t.id === id));
       const fetched = fetchedTracksMap.get(id);
 
-
       let final = fetched;
-
 
       if (!final && original && original.title && original.user) {
         final = original;
       }
 
-
       if (!final) {
         final = { id, title: 'Unknown Track', user: { username: 'Unknown' } };
       }
-
 
       if (!final.artwork_url && final.user && final.user.avatar_url) {
         final.artwork_url = final.user.avatar_url;
@@ -1014,6 +1109,11 @@ ipcMain.handle('get-playlist-details', async (event, playlistId) => {
 
       return final;
     });
+
+    // Clear Map to free memory
+    fetchedTracksMap.clear();
+
+    return result;
 
   } catch (error) {
     console.error('Error fetching playlist details:', error);
@@ -1070,11 +1170,18 @@ app.on('before-quit', () => {
 });
 
 app.whenReady().then(async () => {
+  // Load settings and apply proxy before ClientID fetch
+  let settings = defaultSettings;
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    }
+  } catch (e) { }
+  await applyProxy(settings);
+
   await getClientId();
-  console.log('Client ID:', CLIENT_ID);
   createWindow();
   createTray();
-  connectRPC();
 
 
   globalShortcut.register('MediaPlayPause', () => {
@@ -1087,6 +1194,10 @@ app.whenReady().then(async () => {
 
   globalShortcut.register('MediaPreviousTrack', () => {
     if (mainWindow) mainWindow.webContents.send('media-control', 'previous');
+  });
+
+  globalShortcut.register('CommandOrControl+Shift+I', () => {
+    if (mainWindow) mainWindow.webContents.toggleDevTools();
   });
 });
 

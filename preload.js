@@ -32,4 +32,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('media-control', listener);
         return () => ipcRenderer.removeListener('media-control', listener);
     },
+    toggleMiniPlayer: () => ipcRenderer.send('window-toggle-mini'),
+    onMiniPlayerState: (callback) => {
+        const listener = (event, isMini) => callback(isMini);
+        ipcRenderer.on('mini-player-state', listener);
+        return () => ipcRenderer.removeListener('mini-player-state', listener);
+    },
 });

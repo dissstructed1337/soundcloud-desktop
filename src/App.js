@@ -108,6 +108,23 @@ const translations = {
     loginButton: 'Войти через SoundCloud',
     loginLoading: 'Подключение...',
     viewAll: 'Показать все',
+    shuffle: 'Перемешать',
+    loop: 'Повтор',
+    eqFlat: 'Сброс',
+    eqRock: 'Рок',
+    eqPop: 'Поп',
+    eqBass: 'Бас',
+    eqVocal: 'Вокал',
+    eqElectronic: 'Электроника',
+    eqJazz: 'Джаз',
+    eqClassical: 'Классика',
+    proxy: 'Прокси (Bypass)',
+    proxyDesc: 'Используйте прокси для обхода блокировок в вашей стране',
+    proxyEnable: 'Включить прокси',
+    proxyUrlPlaceholder: 'Адрес (напр. socks5://ip:port)',
+    proxyBuiltin: 'Встроенный (Shared)',
+    proxyCustom: 'Свой прокси',
+    proxyRestart: 'Может потребоваться перезапуск трека',
   },
   en: {
     home: 'Home',
@@ -214,6 +231,23 @@ const translations = {
     loginLoading: 'Connecting...',
     continueGuest: 'Continue without registration',
     viewAll: 'View All',
+    shuffle: 'Shuffle',
+    loop: 'Loop',
+    eqFlat: 'Flat',
+    eqRock: 'Rock',
+    eqPop: 'Pop',
+    eqBass: 'Bass',
+    eqVocal: 'Vocal',
+    eqElectronic: 'Electronic',
+    eqJazz: 'Jazz',
+    eqClassical: 'Classical',
+    proxy: 'Proxy (Bypass)',
+    proxyDesc: 'Use a proxy to bypass regional blocks in your country',
+    proxyEnable: 'Enable Proxy',
+    proxyUrlPlaceholder: 'Address (e.g. socks5://ip:port)',
+    proxyBuiltin: 'Built-in (Shared)',
+    proxyCustom: 'Custom Proxy',
+    proxyRestart: 'Track restart may be required',
   }
 };
 
@@ -251,6 +285,7 @@ function App() {
   const [scUser, setScUser] = useState(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isGuestMode, setIsGuestMode] = useState(false);
+  const [isMini, setIsMini] = useState(false);
 
 
   const [settings, setSettings] = useState({
@@ -260,12 +295,13 @@ function App() {
     eq: [0, 0, 0, 0, 0],
     language: 'ru',
     crossfade: true,
-    crossfade: true,
-    crossfade: true,
     visualizerStyle: 'Bars',
     backgroundImage: null,
     backgroundFit: 'cover',
-    customThemeColor: '#ff5500'
+    customThemeColor: '#ff5500',
+    proxyEnabled: false,
+    proxyType: 'Builtin', // 'Builtin' or 'Custom'
+    proxyUrl: ''
   });
 
   const t = (key) => {
@@ -281,10 +317,28 @@ function App() {
   const CROSSFADE_DURATION = 2500;
   const isTransitioningRef = useRef(false);
 
-
   const [seek, setSeek] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isLooping, setIsLooping] = useState(false);
+  const [isShuffled, setIsShuffled] = useState(false);
+
+  const currentTrackRef = useRef(currentTrack);
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  const isShuffledRef = useRef(isShuffled);
+  useEffect(() => {
+    isShuffledRef.current = isShuffled;
+  }, [isShuffled]);
+
+  const isLoopingRef = useRef(isLooping);
+  useEffect(() => {
+    isLoopingRef.current = isLooping;
+    if (sound) {
+      sound.loop(isLooping);
+    }
+  }, [isLooping, sound]);
 
   useEffect(() => {
     let interval;
@@ -371,20 +425,8 @@ function App() {
     if (sound) {
       sound.seek(newSeek);
     }
-    triggerRPCUpdate(newSeek);
   };
 
-  const triggerRPCUpdate = (customSeek = null) => {
-    if (window.electronAPI && window.electronAPI.updateDiscordRPC && currentTrack) {
-      window.electronAPI.updateDiscordRPC({
-        title: currentTrack.title || 'Track',
-        artist: currentTrack.user?.username || 'Unknown Artist',
-        duration: duration || 0,
-        seek: customSeek !== null ? customSeek : (seek || 0),
-        isPaused: !isPlaying
-      });
-    }
-  };
 
   const formatTime = (seconds) => {
     const minutes = Math.floor(seconds / 60);
@@ -418,17 +460,7 @@ function App() {
   }, [isPlaying, sound]);
 
 
-  useEffect(() => {
-    triggerRPCUpdate();
-  }, [currentTrack, isPlaying, duration]);
 
-  useEffect(() => {
-    // Pulse update after startup to ensure RPC catches up if it connected late
-    const timer = setTimeout(() => {
-      if (currentTrack) triggerRPCUpdate();
-    }, 7000);
-    return () => clearTimeout(timer);
-  }, []);
 
   const addToHistory = async (item) => {
     if (window.electronAPI) {
@@ -444,13 +476,6 @@ function App() {
     queueRef.current = currentQueue;
   }, [currentQueue]);
 
-  const isLoopingRef = useRef(isLooping);
-  useEffect(() => {
-    isLoopingRef.current = isLooping;
-    if (sound) {
-      sound.loop(isLooping);
-    }
-  }, [isLooping, sound]);
 
   const togglePlay = () => {
     if (sound) {
@@ -464,28 +489,50 @@ function App() {
 
   const playNext = () => {
     const q = queueRef.current;
-    if (!currentTrack || q.length === 0) {
+    const current = currentTrackRef.current;
+    if (!current || !q || q.length === 0) {
+      // console.log('PlayNext: No track or empty queue');
       setIsPlaying(false);
       return;
     }
-    const idx = q.findIndex(t => t.id === currentTrack.id);
+
+    const currentId = String(current.id);
+    const idx = q.findIndex(t => String(t.id) === currentId);
+    // console.log(`PlayNext: [${currentId}] Current index: ${idx} / Queue length: ${q.length}`);
+
+    if (isShuffledRef.current && q.length > 1) {
+      let nextIdx = Math.floor(Math.random() * q.length);
+      // Try to avoid playing the same track if the queue has more than 1 track
+      if (idx !== -1 && q.length > 1 && nextIdx === idx) {
+        nextIdx = (nextIdx + 1) % q.length;
+      }
+      playTrackSecure(q[nextIdx]);
+      return;
+    }
+
     if (idx !== -1 && idx < q.length - 1) {
-      playTrackSecure(q[idx + 1]);
+      const nextTrack = q[idx + 1];
+      // console.log('PlayNext: Moving track...');
+      playTrackSecure(nextTrack);
     } else {
+      // console.log('PlayNext: End of queue');
       setIsPlaying(false);
     }
   };
 
   const playPrevious = () => {
     const q = queueRef.current;
-    if (!currentTrack || q.length === 0) return;
-    const idx = q.findIndex(t => t.id === currentTrack.id);
+    const current = currentTrackRef.current;
+    if (!current || !q || q.length === 0) return;
+    const idx = q.findIndex(t => String(t.id) === String(current.id));
     if (idx > 0) {
       playTrackSecure(q[idx - 1]);
     }
   };
 
   const playTrackSecure = async (track, newQueue = null) => {
+    // console.log('PlayTrack: starting', track.title);
+
     if (track.kind === 'playlist') {
       openPlaylist(track);
       addToHistory(track);
@@ -495,10 +542,16 @@ function App() {
     addToHistory(track);
 
     if (newQueue) {
+      // console.log('Updating queue, size:', newQueue.length);
       setCurrentQueue(newQueue);
       queueRef.current = newQueue;
     }
 
+    // Update UI and REF immediately to avoid stale closures in upcoming async operations
+    setCurrentTrack(track);
+    currentTrackRef.current = track;
+    setSeek(0);
+    setDuration(0);
     isTransitioningRef.current = true;
     const previousSound = sound;
     const useCrossfade = settings.crossfade && !isLoopingRef.current;
@@ -508,11 +561,6 @@ function App() {
     if (previousSound) {
       previousSound.off();
     }
-
-    // Update UI immediately
-    setCurrentTrack(track);
-    setSeek(0);
-    setDuration(0);
 
     if (previousSound && !useCrossfade) {
       previousSound.stop();
@@ -526,7 +574,7 @@ function App() {
         html5: false,
         format: ['mp3', 'mpeg'],
         volume: useCrossfade ? 0 : volume,
-        loop: isLoopingRef.current,
+        loop: isLooping,
         onplay: () => {
           setIsPlaying(true);
           setDuration(newSound.duration());
@@ -560,6 +608,7 @@ function App() {
         onpause: () => setIsPlaying(false),
         onstop: () => setIsPlaying(false),
         onend: () => {
+          // console.log('Track ended');
           if (isLoopingRef.current) {
             return;
           }
@@ -594,6 +643,10 @@ function App() {
   const toggleLoop = () => {
     const newLoop = !isLooping;
     setIsLooping(newLoop);
+  };
+
+  const toggleShuffle = () => {
+    setIsShuffled(!isShuffled);
   };
 
   useEffect(() => {
@@ -722,7 +775,14 @@ function App() {
     }
   }, []);
 
-
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.onMiniPlayerState) {
+      const cleanup = window.electronAPI.onMiniPlayerState((state) => {
+        setIsMini(state);
+      });
+      return () => cleanup();
+    }
+  }, []);
 
   useEffect(() => {
     if (dataLoaded && window.electronAPI) {
@@ -1498,7 +1558,7 @@ function App() {
                           e.currentTarget.style.borderColor = 'var(--border-dim)';
                         }}
                       >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
                         {t('uploadBackground')}
                       </button>
 
@@ -1670,6 +1730,86 @@ function App() {
                   </div>
                 </div>
 
+                <div className="setting-section-header" style={{ marginBottom: '10px', marginTop: '24px', color: 'var(--text-muted)', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '1px' }}>
+                  {t('proxy')}
+                </div>
+
+                <div className="setting-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <div className="setting-info">
+                      <h3 style={{ margin: 0 }}>{t('proxyEnable')}</h3>
+                      <p style={{ margin: '4px 0 0 0' }}>{t('proxyDesc')}</p>
+                    </div>
+                    <div
+                      className={`toggle-switch ${settings.proxyEnabled ? 'active' : ''}`}
+                      onClick={() => setSettings({ ...settings, proxyEnabled: !settings.proxyEnabled })}
+                    >
+                      <div className="toggle-thumb"></div>
+                    </div>
+                  </div>
+
+                  {settings.proxyEnabled && (
+                    <div style={{ width: '100%', animation: 'fadeIn 0.2s ease' }}>
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                        <button
+                          onClick={() => setSettings({ ...settings, proxyType: 'Builtin' })}
+                          style={{
+                            flex: 1,
+                            padding: '8px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border-dim)',
+                            background: settings.proxyType === 'Builtin' ? 'var(--primary)' : 'var(--bg-elevated)',
+                            color: 'white',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {t('proxyBuiltin')}
+                        </button>
+                        <button
+                          onClick={() => setSettings({ ...settings, proxyType: 'Custom' })}
+                          style={{
+                            flex: 1,
+                            padding: '8px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border-dim)',
+                            background: settings.proxyType === 'Custom' ? 'var(--primary)' : 'var(--bg-elevated)',
+                            color: 'white',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {t('proxyCustom')}
+                        </button>
+                      </div>
+
+                      {settings.proxyType === 'Custom' && (
+                        <input
+                          type="text"
+                          placeholder={t('proxyUrlPlaceholder')}
+                          value={settings.proxyUrl || ''}
+                          onChange={(e) => setSettings({ ...settings, proxyUrl: e.target.value })}
+                          style={{
+                            width: '100%',
+                            background: 'var(--bg-panel)',
+                            border: '1px solid var(--border-dim)',
+                            borderRadius: '8px',
+                            padding: '10px 12px',
+                            color: 'white',
+                            fontSize: '13px'
+                          }}
+                        />
+                      )}
+
+                      <p style={{ margin: '8px 0 0 0', fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                        {t('proxyRestart')}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
               </div>
 
               {/* RIGHT COLUMN: Playback & EQ */}
@@ -1745,6 +1885,43 @@ function App() {
                       </div>
                     ))}
                   </div>
+
+                  <div className="eq-presets" style={{
+                    marginTop: '16px',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    justifyContent: 'center'
+                  }}>
+                    {[
+                      { name: 'Flat', key: 'eqFlat', values: [0, 0, 0, 0, 0] },
+                      { name: 'Rock', key: 'eqRock', values: [4, 2, -1, 1, 3] },
+                      { name: 'Pop', key: 'eqPop', values: [-1, 1, 3, 2, -1] },
+                      { name: 'Bass', key: 'eqBass', values: [6, 3, 0, 0, 0] },
+                      { name: 'Vocal', key: 'eqVocal', values: [-2, 0, 3, 3, -1] },
+                      { name: 'Electronic', key: 'eqElectronic', values: [4, 1, 1, 3, 4] },
+                      { name: 'Jazz', key: 'eqJazz', values: [3, 1, -2, 1, 3] },
+                      { name: 'Classical', key: 'eqClassical', values: [3, 2, -1, 2, 3] }
+                    ].map(preset => (
+                      <button
+                        key={preset.name}
+                        onClick={() => setSettings({ ...settings, eq: preset.values })}
+                        style={{
+                          background: JSON.stringify(settings.eq) === JSON.stringify(preset.values) ? 'var(--primary)' : 'var(--bg-elevated)',
+                          color: JSON.stringify(settings.eq) === JSON.stringify(preset.values) ? 'white' : 'var(--text-main)',
+                          border: '1px solid var(--border-dim)',
+                          borderRadius: '6px',
+                          padding: '6px 12px',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        {t(preset.key)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="setting-item" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '20px', marginTop: '10px' }}>
@@ -1814,8 +1991,7 @@ function App() {
           boxShadow: '0 8px 32px rgba(0,0,0,0.5)'
         }}>
           <svg width="64" height="64" viewBox="0 0 24 24" fill="var(--primary)" style={{ marginBottom: '24px' }}>
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
-          </svg>
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" /></svg>
           <h1 style={{ margin: '0 0 8px 0', fontSize: '24px' }}>{t('loginWelcome')}</h1>
           <p style={{ color: 'var(--text-secondary)', marginBottom: '32px' }}>{t('loginSubtitle')}</p>
 
@@ -1874,6 +2050,76 @@ function App() {
     );
   };
 
+  const renderMiniPlayer = () => {
+    return (
+      <div className="mini-player" style={{
+        height: '100vh',
+        width: '100vw',
+        background: 'var(--bg-dark)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        position: 'relative',
+        overflow: 'hidden',
+        border: '1px solid var(--border-dim)',
+        userSelect: 'none'
+      }}>
+        <div className="title-bar" style={{
+          position: 'absolute',
+          top: 0,
+          width: '100%',
+          background: 'transparent',
+          borderBottom: 'none',
+          height: '32px'
+        }}>
+          <div className="window-controls" style={{ marginLeft: 'auto' }}>
+            <button className="control-btn" onClick={() => window.electronAPI.toggleMiniPlayer()} title="Exit Mini-Player">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></svg>
+            </button>
+            <button className="control-btn close" onClick={() => window.electronAPI.close()}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
+          </div>
+        </div>
+
+        {currentTrack ? (
+          <>
+            <img
+              src={currentTrack.artwork_url?.replace('-large', '-t500x500') || 'https://a-v2.sndcdn.com/assets/images/default_artwork_large-d36391.png'}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', opacity: 0.15, filter: 'blur(30px)' }}
+              alt=""
+            />
+            <div style={{ zIndex: 1, textAlign: 'center', padding: '10px' }}>
+              <img
+                src={currentTrack.artwork_url?.replace('-large', '-t500x500') || 'https://a-v2.sndcdn.com/assets/images/default_artwork_large-d36391.png'}
+                style={{ width: '160px', height: '160px', borderRadius: '12px', boxShadow: '0 8px 32px rgba(0,0,0,0.5)', marginBottom: '15px', objectFit: 'cover' }}
+                alt=""
+              />
+              <div style={{ padding: '0 15px' }}>
+                <h3 style={{ fontSize: '14px', margin: '0 0 2px 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '280px', color: 'white' }}>{currentTrack.title}</h3>
+                <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, opacity: 0.8 }}>{currentTrack.user?.username}</p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '20px', marginTop: '20px', justifyContent: 'center', alignItems: 'center' }}>
+                <button className="icon-btn" style={{ padding: '8px' }} onClick={playPrevious}><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg></button>
+                <button className="icon-btn" onClick={togglePlay} style={{ background: 'var(--primary)', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', border: 'none', boxShadow: '0 0 15px var(--primary-glow)' }}>
+                  {isPlaying ? <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>}
+                </button>
+                <button className="icon-btn" style={{ padding: '8px' }} onClick={playNext}><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg></button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '20px', opacity: 0.6 }}>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '10px' }}><circle cx="12" cy="12" r="10" /><path d="M12 8v8M8 12h8" /></svg>
+            <p style={{ fontSize: '13px' }}>{t('playMusicToTaste')}</p>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderTitleBar = () => {
     return (
       <div className="title-bar">
@@ -1882,6 +2128,9 @@ function App() {
           <span>SoundCloud Desktop</span>
         </div>
         <div className="window-controls">
+          <button className="control-btn" onClick={() => window.electronAPI.toggleMiniPlayer()} title="Toggle Mini-Player">
+            <svg width="14" height="14" viewBox="1 1 22 22" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><rect x="13" y="13" width="5" height="5"></rect></svg>
+          </button>
           <button className="control-btn" onClick={() => window.electronAPI.minimize()}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14" /></svg>
           </button>
@@ -1895,6 +2144,14 @@ function App() {
       </div>
     );
   };
+
+  if (isMini) {
+    return (
+      <div className="App" data-theme={settings.theme}>
+        {renderMiniPlayer()}
+      </div>
+    );
+  }
 
   if (dataLoaded && !scUser && !isGuestMode) {
     return (
@@ -2018,7 +2275,6 @@ function App() {
                 </button>
               </div>
 
-
               <canvas
                 ref={canvasRef}
                 width={300}
@@ -2059,7 +2315,21 @@ function App() {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button
+                  className="icon-btn"
+                  onClick={toggleShuffle}
+                  title={t('shuffle')}
+                  style={{ color: isShuffled ? 'var(--primary)' : 'var(--text-secondary)', marginRight: '4px' }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="16 3 21 3 21 8"></polyline>
+                    <line x1="4" y1="20" x2="21" y2="3"></line>
+                    <polyline points="21 16 21 21 16 21"></polyline>
+                    <line x1="15" y1="15" x2="21" y2="21"></line>
+                    <line x1="4" y1="4" x2="9" y2="9"></line>
+                  </svg>
+                </button>
                 <button
                   className={`icon-btn ${isLiked(currentTrack) ? 'liked' : ''}`}
                   onClick={(e) => handleToggleLike(e, currentTrack)}

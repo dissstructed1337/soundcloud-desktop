@@ -1,6 +1,6 @@
 {
   "name": "soundcloud-desktop",
-  "version": "1.0.4",
+  "version": "1.0.7",
   "author": "SoundCloud Desktop",
   "description": "Desktop SoundCloud clone",
   "homepage": ".",
@@ -52,13 +52,15 @@
   },
   "dependencies": {
     "axios": "^1.4.0",
-    "discord-rpc": "^4.0.1",
     "dotenv": "^17.2.3",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.6.2",
     "howler": "^2.2.3",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "socks-proxy-agent": "^8.0.5",
     "sqlite3": "^5.1.6"
   },
   "devDependencies": {

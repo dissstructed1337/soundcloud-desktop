@@ -815,6 +815,8 @@ body {
   outline: none;
   font-family: inherit;
   padding: 0 10px;
+  user-select: text;
+  -webkit-app-region: no-drag;
 }
 
 .search-bar button {
@@ -1590,4 +1592,4 @@ body {
   .sidebar.open {
     transform: translateX(0);
   }
-}
+}@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } } @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } .lyrics-content::-webkit-scrollbar { width: 6px; } .lyrics-content::-webkit-scrollbar-track { background: transparent; } .lyrics-content::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; } .lyrics-content::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
