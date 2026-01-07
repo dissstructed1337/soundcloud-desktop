@@ -13,9 +13,11 @@
 - Темы (в том числе пользовательские)
 - Язык (ru/eng)
 - SoundCloud Sync (лайки, дизлайки треков, плейлистов, просмотр карточек исполнителей, все синхронизируется с вашим профилем).
-- Эквалайзер. 
+- Эквалайзер.
+- Обход блокировок и DPI.
+- Поддержка PROXY (HTTP,HTTPS,SOCKS4,SOCKS5)
 
-## Настройка
+## Установка 
 
 1. Клонируйте репозиторий.
 2. Установите зависимости: `npm install`.
@@ -55,7 +57,9 @@ Also works in blocked countries
 - Themes (and custom one)
 - Language (ru/eng)
 - SoundCloud Sync (Like, unlike tracks, playlists, view artist cards, all synchronized with your profile.)
-- Equaliser 
+- Equaliser
+- Bypassing blocks and DPI
+- Support PROXY (HTTP,HTTPS,SOCKS4,SOCKS5)
 
 ## Setup
 
@@ -86,5 +90,6 @@ Uses SoundCloud public client ID for API requests. Replace `YOUR_PUBLIC_CLIENT_I
 
 soon more...
   
+
 
 
