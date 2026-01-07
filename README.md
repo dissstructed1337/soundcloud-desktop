@@ -8,7 +8,7 @@
 
 - Поиск и воспроизведение треков
 - Просмотр плейлистов и профилей пользователей
-- Локальное хранилище избранного
+- Локальное хранилище треков
 - Медиаплеер с элементами управления
 - Темы (в том числе пользовательские)
 - Язык (ru/eng)
@@ -21,6 +21,7 @@
 2. Установите зависимости: `npm install`.
 3. Запустите приложение: `npm run dev`.
 4. Или скачайте релиз.
+   (https://github.com/dissstructed1337/soundcloud-desktop/releases)
 
 ## Использование API
 
@@ -85,4 +86,5 @@ Uses SoundCloud public client ID for API requests. Replace `YOUR_PUBLIC_CLIENT_I
 
 soon more...
   
+
 
