@@ -35,6 +35,10 @@
 - SQLite для локального хранения
 
 
+
+
+
+
 # SoundCloud Desktop Clone
 
 A desktop application that mimics SoundCloud functionality using Electron and React. It uses SoundCloud's public API for fetching tracks, playlists, and user data.
@@ -81,3 +85,4 @@ Uses SoundCloud public client ID for API requests. Replace `YOUR_PUBLIC_CLIENT_I
 
 soon more...
   
+
