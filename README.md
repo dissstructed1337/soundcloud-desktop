@@ -67,6 +67,7 @@ Also works in blocked countries
 2. Install dependencies: `npm install`
 3. Start the app: `npm run dev`
 4. Or download the release.
+   (https://github.com/dissstructed1337/soundcloud-desktop/releases)
 
 ## API Usage
 
@@ -90,6 +91,7 @@ Uses SoundCloud public client ID for API requests. Replace `YOUR_PUBLIC_CLIENT_I
 
 soon more...
   
+
 
 
 
