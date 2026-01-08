@@ -1,6 +1,6 @@
 {
   "name": "soundcloud-desktop",
-  "version": "1.0.7",
+  "version": "2.0.0",
   "author": "SoundCloud Desktop",
   "description": "Desktop SoundCloud clone",
   "homepage": ".",
@@ -59,6 +59,7 @@
     "howler": "^2.2.3",
     "http-proxy-agent": "^7.0.2",
     "https-proxy-agent": "^7.0.6",
+    "md5": "^2.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "socks-proxy-agent": "^8.0.5",

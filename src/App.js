@@ -310,7 +310,15 @@ function App() {
     proxyEnabled: false,
     proxyType: 'Builtin', // 'Builtin' or 'Custom'
     proxyUrl: '',
-    discordClientId: '1458763452041662618' // Default
+    discordClientId: '1458763452041662618', // Default
+    customTheme: {
+      primary: '#ff5500',
+      bgDark: '#000000',
+      bgPanel: '#121214',
+      bgElevated: '#1c1c1f',
+      textMain: '#ffffff',
+      textSecondary: '#a1a1aa'
+    }
   });
 
   const t = (key) => {
@@ -322,6 +330,7 @@ function App() {
   const filtersRef = useRef([]);
   const analyserRef = useRef(null);
   const canvasRef = useRef(null);
+  const backgroundCanvasRef = useRef(null);
   const animationFrameRef = useRef(null);
   const CROSSFADE_DURATION = 2500;
   const isTransitioningRef = useRef(false);
@@ -439,7 +448,7 @@ function App() {
         window.electronAPI.rpcUpdate({
           title: currentTrack.title,
           artist: currentTrack.user?.username,
-          duration: sound.duration(),
+          duration: sound.duration() || (currentTrack.duration ? currentTrack.duration / 1000 : 0),
           seek: newSeek,
           isPlaying: isPlaying,
           artworkUrl: artwork
@@ -592,7 +601,7 @@ function App() {
       const streamUrl = await window.electronAPI.getTrackStream(track.id);
       const newSound = new Howl({
         src: [streamUrl],
-        html5: true,
+        html5: false,
         format: ['mp3', 'mpeg'],
         volume: useCrossfade ? 0 : volume,
         loop: isLooping,
@@ -616,7 +625,10 @@ function App() {
             if (window.Howler.ctx.state === 'suspended') {
               window.Howler.ctx.resume();
             }
-            connectEQ();
+            // Small delay to ensure Howl's audio node is connected
+            setTimeout(() => {
+              connectEQ();
+            }, 100);
 
             if (settings.notifications && window.electronAPI) {
               window.electronAPI.showNotification({
@@ -633,7 +645,7 @@ function App() {
               title: track.title,
               artist: track.user?.username,
               duration: newSound.duration(),
-              seek: 0,
+              seek: newSound.seek(),
               isPlaying: true,
               artworkUrl: artwork
             });
@@ -657,14 +669,14 @@ function App() {
         },
         onpause: () => {
           setIsPlaying(false);
-          if (window.electronAPI && window.electronAPI.rpcUpdate && track) {
+          if (window.electronAPI && window.electronAPI.rpcUpdate) {
             let artwork = track.artwork_url;
             if (artwork) artwork = artwork.replace('large', 't500x500');
 
             window.electronAPI.rpcUpdate({
               title: track.title,
               artist: track.user?.username,
-              duration: newSound.duration(),
+              duration: newSound.duration() || (track.duration ? track.duration / 1000 : 0),
               seek: newSound.seek(),
               isPlaying: false,
               artworkUrl: artwork
@@ -750,10 +762,17 @@ function App() {
     if (!analyserRef.current) {
       analyserRef.current = ctx.createAnalyser();
       analyserRef.current.fftSize = 256;
+      analyserRef.current.smoothingTimeConstant = 0.8;
     }
 
 
     try {
+      // Ensure audio context is running
+      if (ctx.state === 'suspended') {
+        ctx.resume().then(() => {
+          console.log('connectEQ: Audio context resumed');
+        });
+      }
 
       window.Howler.masterGain.disconnect();
       window.Howler.masterGain.connect(filtersRef.current[0]);
@@ -768,6 +787,7 @@ function App() {
 
       analyserRef.current.disconnect();
       analyserRef.current.connect(ctx.destination);
+      console.log('connectEQ: Audio chain connected successfully');
     } catch (e) {
       console.warn("EQ Connection issue:", e);
     }
@@ -785,6 +805,186 @@ function App() {
     }
   }, [settings.eq]);
 
+  // Visualizer Animation
+  useEffect(() => {
+    if (!backgroundCanvasRef.current) return;
+
+    const canvas = backgroundCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    // Ensure analyser is created
+    if (!analyserRef.current && window.Howler && window.Howler.ctx) {
+      const audioCtx = window.Howler.ctx;
+      analyserRef.current = audioCtx.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      console.log('Visualizer: Analyser created');
+      // Connect it to the audio chain
+      connectEQ();
+    }
+
+    if (!analyserRef.current) {
+      console.warn('Visualizer: Analyser not available yet');
+      return;
+    }
+
+    const analyser = analyserRef.current;
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    let particles = [];
+    const particleCount = 100;
+
+    // Initialize particles for Particles visualizer
+    for (let i = 0; i < particleCount; i++) {
+      particles.push({
+        x: Math.random() * window.innerWidth,
+        y: Math.random() * window.innerHeight,
+        vx: (Math.random() - 0.5) * 2,
+        vy: (Math.random() - 0.5) * 2,
+        radius: Math.random() * 3 + 1
+      });
+    }
+
+    const draw = () => {
+      if (!canvas || !ctx) return;
+
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      analyser.getByteFrequencyData(dataArray);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const style = settings.visualizerStyle || 'Bars';
+
+      if (style === 'Bars') {
+        // Classic bars
+        const barWidth = (canvas.width / bufferLength) * 2.5;
+        let barHeight;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+          barHeight = (dataArray[i] / 255) * canvas.height * 0.8;
+
+          const hue = (i / bufferLength) * 360;
+          ctx.fillStyle = `hsla(${hue}, 80%, 60%, 0.8)`;
+          ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+          x += barWidth + 1;
+        }
+      } else if (style === 'Wave') {
+        // Oscilloscope wave
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(255, 85, 0, 0.8)';
+        ctx.beginPath();
+
+        const sliceWidth = canvas.width / bufferLength;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+          const v = dataArray[i] / 128.0;
+          const y = (v * canvas.height) / 2;
+
+          if (i === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+
+          x += sliceWidth;
+        }
+
+        ctx.lineTo(canvas.width, canvas.height / 2);
+        ctx.stroke();
+      } else if (style === 'Mirrored') {
+        // Mirrored bars
+        const barWidth = (canvas.width / bufferLength) * 2.5;
+        let x = 0;
+
+        for (let i = 0; i < bufferLength; i++) {
+          const barHeight = (dataArray[i] / 255) * (canvas.height / 2) * 0.8;
+
+          const hue = (i / bufferLength) * 360;
+          ctx.fillStyle = `hsla(${hue}, 80%, 60%, 0.8)`;
+
+          // Top half
+          ctx.fillRect(x, canvas.height / 2 - barHeight, barWidth, barHeight);
+          // Bottom half (mirrored)
+          ctx.fillRect(x, canvas.height / 2, barWidth, barHeight);
+
+          x += barWidth + 1;
+        }
+      } else if (style === 'Circles') {
+        // Pulsating circles
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const maxRadius = Math.min(canvas.width, canvas.height) / 3;
+
+        for (let i = 0; i < bufferLength; i += 4) {
+          const radius = (dataArray[i] / 255) * maxRadius;
+          const hue = (i / bufferLength) * 360;
+
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+          ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.6)`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      } else if (style === 'Particles') {
+        // Reactive particles
+        const avgFreq = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
+        const intensity = avgFreq / 255;
+
+        particles.forEach((particle, i) => {
+          // Update position
+          particle.x += particle.vx * (1 + intensity * 2);
+          particle.y += particle.vy * (1 + intensity * 2);
+
+          // Bounce off edges
+          if (particle.x < 0 || particle.x > canvas.width) particle.vx *= -1;
+          if (particle.y < 0 || particle.y > canvas.height) particle.vy *= -1;
+
+          // Keep in bounds
+          particle.x = Math.max(0, Math.min(canvas.width, particle.x));
+          particle.y = Math.max(0, Math.min(canvas.height, particle.y));
+
+          // Draw particle
+          const hue = (i / particleCount) * 360;
+          ctx.beginPath();
+          ctx.arc(particle.x, particle.y, particle.radius * (1 + intensity), 0, 2 * Math.PI);
+          ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${0.6 + intensity * 0.4})`;
+          ctx.fill();
+
+          // Draw connections
+          particles.forEach((other, j) => {
+            if (j <= i) return;
+            const dx = particle.x - other.x;
+            const dy = particle.y - other.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < 100 * (1 + intensity)) {
+              ctx.beginPath();
+              ctx.moveTo(particle.x, particle.y);
+              ctx.lineTo(other.x, other.y);
+              ctx.strokeStyle = `hsla(${hue}, 80%, 60%, ${(1 - distance / 100) * 0.3 * intensity})`;
+              ctx.lineWidth = 1;
+              ctx.stroke();
+            }
+          });
+        });
+      }
+
+      animationFrameRef.current = requestAnimationFrame(draw);
+    };
+
+    draw();
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [settings.visualizerStyle, isPlaying]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -880,102 +1080,187 @@ function App() {
 
 
   useEffect(() => {
+    // Handle Window Resize for Background Canvas
+    const handleResize = () => {
+      if (backgroundCanvasRef.current) {
+        backgroundCanvasRef.current.width = window.innerWidth;
+        backgroundCanvasRef.current.height = window.innerHeight;
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize(); // Init
+
     if (!isPlaying) {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      return;
+      return () => window.removeEventListener('resize', handleResize);
     }
 
-    // Resolve theme color to RGB for alpha mixing
-    let r = 255, g = 85, b = 0; // Default #ff5500
-    if (canvasRef.current) {
-      // We must use the canvas element (or any element inside .App) to get the correct overridden var
-      const computed = getComputedStyle(canvasRef.current).getPropertyValue('--primary').trim();
-
-      // Use a temporary element to safely resolve any CSS color string (hex, rgb, names) to rgb()
+    // Resolve theme color
+    let r = 255, g = 85, b = 0;
+    if (canvasRef.current || backgroundCanvasRef.current) {
+      // Try to get color from a stable element
       const tempEl = document.createElement('div');
-      tempEl.style.color = computed || '#ff5500';
+      tempEl.style.color = 'var(--primary)';
       document.body.appendChild(tempEl);
-      const rgbStr = getComputedStyle(tempEl).color; // "rgb(r, g, b)"
+      // Wait for next tick or just force clean style read?
+      // Actually var(--primary) is set on .App, so we need to be inside it?
+      // Let's just use the settings value if possible, or fallback.
+      // But settings color might be a CSS var name if not custom.
+      // Using the temp element method is fine but let's be safer.
+      const computed = getComputedStyle(tempEl).color;
       document.body.removeChild(tempEl);
 
-      const match = rgbStr.match(/\d+/g);
+      const match = computed.match(/\d+/g);
       if (match && match.length >= 3) {
         [r, g, b] = match.map(Number);
+      } else if (settings.customThemeColor && settings.customThemeColor.startsWith('#')) {
+        const hex = settings.customThemeColor.substring(1);
+        if (hex.length === 6) {
+          r = parseInt(hex.substring(0, 2), 16);
+          g = parseInt(hex.substring(2, 4), 16);
+          b = parseInt(hex.substring(4, 6), 16);
+        }
       }
     }
     const rgb = `${r}, ${g}, ${b}`;
 
-    const draw = () => {
-      if (!analyserRef.current || !canvasRef.current) return;
+    // Particle System State
+    const particles = [];
+    const maxParticles = 100;
 
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
+    const draw = () => {
+      if (!analyserRef.current) return;
       const analyser = analyserRef.current;
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
-
       analyser.getByteFrequencyData(dataArray);
 
-      const width = canvas.width;
-      const height = canvas.height;
-      const style = settings.visualizerStyle || 'Bars';
+      // --- Small Player Visualizer (CanvasRef) ---
+      if (canvasRef.current) {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        const style = settings.visualizerStyle || 'Bars';
 
-      ctx.clearRect(0, 0, width, height);
+        ctx.clearRect(0, 0, width, height);
 
-      if (style === 'Bars') {
-        const barWidth = (width / bufferLength) * 2.5;
-        let barHeight;
-        let x = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          barHeight = (dataArray[i] / 255) * height;
-          const gradient = ctx.createLinearGradient(0, height, 0, 0);
-          gradient.addColorStop(0, `rgba(${rgb}, 0.2)`);
-          gradient.addColorStop(1, `rgba(${rgb}, 0.8)`);
-          ctx.fillStyle = gradient;
-          ctx.fillRect(x, height - barHeight, barWidth, barHeight);
-          x += barWidth + 1;
-        }
-      } else if (style === 'Waveform') {
-        analyser.getByteTimeDomainData(dataArray);
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = `rgb(${rgb})`;
-        ctx.beginPath();
-        const sliceWidth = width * 1.0 / bufferLength;
-        let x = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          const v = dataArray[i] / 128.0;
-          const y = v * height / 2;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-          x += sliceWidth;
-        }
-        ctx.lineTo(width, height / 2);
-        ctx.stroke();
-      } else if (style === 'Mirrored') {
-        const barWidth = (width / bufferLength) * 1.2;
-        let barHeight;
-        const centerX = width / 2;
-        for (let i = 0; i < bufferLength; i++) {
-          barHeight = (dataArray[i] / 255) * height * 0.8;
-          const alpha = 0.3 + (dataArray[i] / 255) * 0.7;
-          ctx.fillStyle = `rgba(${rgb}, ${alpha})`;
-          ctx.fillRect(centerX + (i * (barWidth + 1)), height / 2 - barHeight / 2, barWidth, barHeight);
-          ctx.fillRect(centerX - (i * (barWidth + 1)), height / 2 - barHeight / 2, barWidth, barHeight);
-        }
-      } else if (style === 'Circles') {
-        const centerX = width / 2;
-        const centerY = height / 2;
-        for (let i = 0; i < bufferLength; i += 4) {
-          const radius = (dataArray[i] / 255) * (height / 2);
-          const alpha = Math.max(0, 0.1 - (i / bufferLength) * 0.1);
-          // Note: using simple hex math previously was buggy anyway for small values
-          // Here we can use strokeStyle with explicit alpha, but strokeStyle usually prefers solid or rgba
+        // Don't draw complex background styles on the small player canvas
+        const playerStyle = ['Particles', 'Frequency'].includes(style) ? 'Bars' : style;
+
+        if (playerStyle === 'Bars') {
+          const barWidth = (width / bufferLength) * 2.5;
+          let barHeight;
+          let x = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            barHeight = (dataArray[i] / 255) * height;
+            ctx.fillStyle = `rgba(${rgb}, 0.8)`;
+            ctx.fillRect(x, height - barHeight, barWidth, barHeight);
+            x += barWidth + 1;
+          }
+        } else if (playerStyle === 'Waveform') {
+          const timeData = new Uint8Array(bufferLength);
+          analyser.getByteTimeDomainData(timeData);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = `rgb(${rgb})`;
+          ctx.beginPath();
+          const sliceWidth = width * 1.0 / bufferLength;
+          let x = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            const v = timeData[i] / 128.0;
+            const y = v * height / 2;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+            x += sliceWidth;
+          }
+          ctx.stroke();
+        } else if (playerStyle === 'Mirrored') {
+          const barWidth = (width / bufferLength) * 1.2;
+          let barHeight;
+          const centerX = width / 2;
+          for (let i = 0; i < bufferLength; i++) {
+            barHeight = (dataArray[i] / 255) * height * 0.8;
+            ctx.fillStyle = `rgba(${rgb}, 0.6)`;
+            ctx.fillRect(centerX + (i * (barWidth + 1)), height / 2 - barHeight / 2, barWidth, barHeight);
+            ctx.fillRect(centerX - (i * (barWidth + 1)), height / 2 - barHeight / 2, barWidth, barHeight);
+          }
+        } else if (playerStyle === 'Circles') {
+          const centerX = width / 2;
+          const centerY = height / 2;
+          const radius = (dataArray[10] / 255) * (height / 2); // Bass kick
           ctx.beginPath();
           ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
-          ctx.strokeStyle = `rgba(${rgb}, ${Math.max(0.1, alpha + 0.2)})`; // slightly more visible
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = `rgba(${rgb}, 0.8)`;
           ctx.stroke();
         }
+      }
+
+      // --- Fullscreen Background Visualizer (BackgroundCanvasRef) ---
+      if (backgroundCanvasRef.current && ['Particles', 'Frequency'].includes(settings.visualizerStyle)) {
+        const bgCanvas = backgroundCanvasRef.current;
+        const bgCtx = bgCanvas.getContext('2d');
+        const w = bgCanvas.width;
+        const h = bgCanvas.height;
+
+        // Fade out effect for trails
+        bgCtx.fillStyle = settings.visualizerStyle === 'Particles' ? '#00000040' : '#00000020';
+        // Or clear if transparent background is preferred, but trails look cool. 
+        // For 'Frequency' we might want cleaner redraw.
+        if (settings.visualizerStyle === 'Frequency') bgCtx.clearRect(0, 0, w, h);
+        else bgCtx.fillRect(0, 0, w, h);
+
+        if (settings.visualizerStyle === 'Frequency') {
+          // Big spectrum at the bottom
+          const barWidth = (w / bufferLength) * 2.5;
+          let barHeight;
+          let x = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            barHeight = (dataArray[i] / 255) * h * 0.6; // Scale up
+            const gradient = bgCtx.createLinearGradient(0, h, 0, h - barHeight);
+            gradient.addColorStop(0, `rgba(${rgb}, 0.8)`);
+            gradient.addColorStop(1, `rgba(${rgb}, 0.1)`);
+            bgCtx.fillStyle = gradient;
+            bgCtx.fillRect(x, h - barHeight, barWidth, barHeight);
+            x += barWidth + 4; // More spacing
+          }
+        } else if (settings.visualizerStyle === 'Particles') {
+          // Spawn particles based on bass/volume
+          const average = dataArray.reduce((src, a) => src + a, 0) / bufferLength;
+          if (average > 100 && particles.length < maxParticles) {
+            particles.push({
+              x: Math.random() * w,
+              y: h + 10,
+              vx: (Math.random() - 0.5) * 4,
+              vy: -(Math.random() * 5 + 2),
+              life: 1.0,
+              color: `rgba(${rgb}, ${Math.random()})`
+            });
+          }
+
+          // Update and draw particles
+          for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= 0.01;
+
+            // React to music? Maybe jitter
+            p.x += (Math.random() - 0.5) * (average / 50);
+
+            bgCtx.beginPath();
+            bgCtx.arc(p.x, p.y, 3 * (average / 100), 0, Math.PI * 2);
+            bgCtx.fillStyle = p.color;
+            bgCtx.fill();
+
+            if (p.life <= 0 || p.y < -10) {
+              particles.splice(i, 1);
+            }
+          }
+        }
+      } else if (backgroundCanvasRef.current) {
+        // Clear if style switched away
+        const bgCtx = backgroundCanvasRef.current.getContext('2d');
+        bgCtx.clearRect(0, 0, backgroundCanvasRef.current.width, backgroundCanvasRef.current.height);
       }
 
       animationFrameRef.current = requestAnimationFrame(draw);
@@ -983,9 +1268,10 @@ function App() {
 
     draw();
     return () => {
+      window.removeEventListener('resize', handleResize);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, settings.visualizerStyle, settings.theme]);
+  }, [isPlaying, settings.visualizerStyle, settings.theme, settings.customThemeColor]);
 
   const handleImportLikes = async () => {
     if (!scProfileUrl) return;
@@ -1588,14 +1874,17 @@ function App() {
                   Appearance
                 </div>
 
-                <div className="setting-item">
-                  <div className="setting-info">
-                    <h3>{t('theme')}</h3>
-                    <p>{t('themeDesc')}</p>
+                <div className="setting-item" style={{ alignItems: 'flex-start', flexDirection: 'column' }}>
+                  <div className="setting-info" style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div>
+                      <h3>{t('theme')}</h3>
+                      <p>{t('themeDesc')}</p>
+                    </div>
                   </div>
                   <select
                     value={settings.theme}
                     onChange={(e) => setSettings({ ...settings, theme: e.target.value })}
+                    style={{ width: '100%', marginBottom: '16px' }}
                   >
                     <option value="Deep Space">{t('themeDeepSpace')}</option>
                     <option value="Sunset">{t('themeSunset')}</option>
@@ -1609,53 +1898,135 @@ function App() {
                     <option value="Eclipse">{t('themeEclipse')}</option>
                     <option value="Custom">{t('themeCustom')}</option>
                   </select>
-                  {settings.theme === 'Custom' && (
-                    <div style={{ marginTop: '24px', width: '100%', borderTop: '1px solid var(--border-dim)', paddingTop: '20px' }}>
-                      <button
-                        onClick={handleCustomBackground}
-                        style={{
-                          width: '100%',
-                          marginBottom: '20px',
-                          background: 'var(--bg-elevated)',
-                          border: '1px solid var(--border-dim)',
-                          borderRadius: '8px',
-                          padding: '12px',
-                          color: 'var(--text-main)',
-                          fontSize: '13px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '8px',
-                          transition: 'all 0.2s'
-                        }}
-                        onMouseOver={(e) => {
-                          e.currentTarget.style.background = 'var(--bg-hover)';
-                          e.currentTarget.style.borderColor = 'var(--primary)';
-                        }}
-                        onMouseOut={(e) => {
-                          e.currentTarget.style.background = 'var(--bg-elevated)';
-                          e.currentTarget.style.borderColor = 'var(--border-dim)';
-                        }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
-                        {t('uploadBackground')}
-                      </button>
 
-                      <div className="setting-info" style={{ marginBottom: '12px' }}>
-                        <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text-main)' }}>{t('backgroundFit')}</p>
-                        <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>How the content scales</p>
+                  {settings.theme === 'Custom' && (
+                    <div className="custom-theme-editor" style={{ width: '100%', background: 'var(--bg-elevated)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-dim)' }}>
+                      <h4 style={{ margin: '0 0 16px 0', fontSize: '14px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Theme Editor</h4>
+
+                      {/* Color Pickers */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                        {[
+                          { label: 'Primary Color', key: 'primary' },
+                          { label: 'Background', key: 'bgDark' },
+                          { label: 'Panel BG', key: 'bgPanel' },
+                          { label: 'Element BG', key: 'bgElevated' },
+                          { label: 'Text Main', key: 'textMain' },
+                          { label: 'Text Dim', key: 'textSecondary' },
+                        ].map(field => (
+                          <div key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <label style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{field.label}</label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <input
+                                type="color"
+                                value={settings.customTheme?.[field.key] || '#000000'}
+                                onChange={(e) => {
+                                  const newCustomTheme = { ...settings.customTheme, [field.key]: e.target.value };
+                                  setSettings({ ...settings, customTheme: newCustomTheme });
+                                }}
+                                style={{
+                                  width: '32px', height: '32px', padding: 0, border: 'none', borderRadius: '4px', cursor: 'pointer', background: 'none'
+                                }}
+                              />
+                              <input
+                                type="text"
+                                value={settings.customTheme?.[field.key] || ''}
+                                onChange={(e) => {
+                                  const newCustomTheme = { ...settings.customTheme, [field.key]: e.target.value };
+                                  setSettings({ ...settings, customTheme: newCustomTheme });
+                                }}
+                                style={{ width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border-dim)', color: 'var(--text-main)', fontSize: '12px', padding: '4px 8px', borderRadius: '4px' }}
+                              />
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <select
-                        value={settings.backgroundFit || 'cover'}
-                        onChange={(e) => setSettings({ ...settings, backgroundFit: e.target.value })}
-                        style={{ width: '100%' }}
-                      >
-                        <option value="cover">{t('bgCover')}</option>
-                        <option value="contain">{t('bgContain')}</option>
-                        <option value="100% 100%">{t('bgFill')}</option>
-                      </select>
+
+                      {/* Export / Import */}
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+                        <button
+                          onClick={() => {
+                            const themeCode = btoa(JSON.stringify(settings.customTheme));
+                            navigator.clipboard.writeText(themeCode);
+                            alert('Theme code copied to clipboard! Share it with friends.');
+                          }}
+                          style={{ flex: 1, padding: '8px', background: 'var(--bg-hover)', border: '1px solid var(--border-dim)', color: 'var(--text-main)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+                        >
+                          Export (Copy)
+                        </button>
+                        <button
+                          onClick={() => {
+                            const code = prompt('Paste theme code here:');
+                            if (code) {
+                              try {
+                                const imported = JSON.parse(atob(code));
+                                setSettings({ ...settings, customTheme: imported });
+                              } catch (e) {
+                                alert('Invalid theme code');
+                              }
+                            }
+                          }}
+                          style={{ flex: 1, padding: '8px', background: 'var(--bg-hover)', border: '1px solid var(--border-dim)', color: 'var(--text-main)', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+                        >
+                          Import
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (window.confirm('Reset custom theme to defaults?')) {
+                              setSettings({
+                                ...settings, customTheme: {
+                                  primary: '#ff5500',
+                                  bgDark: '#000000',
+                                  bgPanel: '#121214',
+                                  bgElevated: '#1c1c1f',
+                                  textMain: '#ffffff',
+                                  textSecondary: '#a1a1aa'
+                                }
+                              });
+                            }
+                          }}
+                          style={{ flex: 1, padding: '8px', background: 'rgba(255, 68, 68, 0.1)', border: '1px solid rgba(255, 68, 68, 0.2)', color: '#ff4444', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+                        >
+                          Reset Default
+                        </button>
+                      </div>
+
+                      {/* Background Image Section */}
+                      <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '20px' }}>
+                        <button
+                          onClick={handleCustomBackground}
+                          style={{
+                            width: '100%',
+                            background: 'var(--bg-hover)',
+                            border: '1px solid var(--border-dim)',
+                            borderRadius: '8px',
+                            padding: '10px',
+                            color: 'var(--text-main)',
+                            fontSize: '13px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '8px'
+                          }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
+                          {t('uploadBackground')}
+                        </button>
+                        <div style={{ marginTop: '12px' }}>
+                          <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>{t('backgroundFit')}</label>
+                          <select
+                            value={settings.backgroundFit || 'cover'}
+                            onChange={(e) => setSettings({ ...settings, backgroundFit: e.target.value })}
+                            style={{ width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border-dim)', padding: '6px', borderRadius: '4px', color: 'var(--text-main)' }}
+                          >
+                            <option value="cover">{t('bgCover')}</option>
+                            <option value="contain">{t('bgContain')}</option>
+                            <option value="100% 100%">{t('bgFill')}</option>
+                          </select>
+                        </div>
+                      </div>
+
                     </div>
                   )}
                 </div>
@@ -1673,6 +2044,8 @@ function App() {
                     <option value="Waveform">{t('visWave')}</option>
                     <option value="Mirrored">{t('visMirrored')}</option>
                     <option value="Circles">{t('visCircles')}</option>
+                    <option value="Particles">Particles (Background)</option>
+                    <option value="Frequency">Frequency (Background)</option>
                   </select>
                 </div>
 
@@ -2282,18 +2655,40 @@ function App() {
     <div
       className="App"
       data-theme={settings.theme}
-      style={settings.theme === 'Custom' && settings.backgroundImage ? {
-        '--bg-image': !settings.backgroundImage.match(/\.(mp4|webm)$/i) ? `url("${settings.backgroundImage}")` : 'none',
-        '--primary': settings.customThemeColor,
+      style={settings.theme === 'Custom' ? {
+        '--primary': settings.customTheme?.primary || settings.customThemeColor || '#ff5500',
+        '--bg-dark': settings.customTheme?.bgDark || '#000000',
+        '--bg-panel': settings.customTheme?.bgPanel || 'rgba(18, 18, 20, 0.4)',
+        '--bg-elevated': settings.customTheme?.bgElevated || 'rgba(255, 255, 255, 0.05)',
+        '--text-main': settings.customTheme?.textMain || '#ffffff',
+        '--text-secondary': settings.customTheme?.textSecondary || 'rgba(255, 255, 255, 0.85)',
+
+        // Background Image Handling
+        '--bg-image': settings.backgroundImage && !settings.backgroundImage.match(/\.(mp4|webm)$/i) ? `url("${settings.backgroundImage}")` : 'none',
         backgroundSize: settings.backgroundFit || 'cover',
         backgroundPosition: 'center',
         backgroundAttachment: 'fixed',
         backgroundRepeat: 'no-repeat',
-        backgroundImage: !settings.backgroundImage.match(/\.(mp4|webm)$/i)
+        backgroundImage: settings.backgroundImage && !settings.backgroundImage.match(/\.(mp4|webm)$/i)
           ? `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.85)), url("${settings.backgroundImage}")`
           : 'none'
       } : {}}
     >
+      {/* Background Visualizer Canvas */}
+      <canvas
+        ref={backgroundCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 0,
+          opacity: settings.visualizerStyle === 'Particles' ? 1 : 0.6
+        }}
+      />
+
       {settings.theme === 'Custom' && settings.backgroundImage && settings.backgroundImage.match(/\.(mp4|webm)$/i) && (
         <div className="video-bg-container" style={{
           position: 'absolute',
@@ -2333,6 +2728,8 @@ function App() {
           />
         </div>
       )}
+
+
       {renderTitleBar()}
       <div className={`main-container ${settings.sidebarMode === 'Compact' ? 'compact-sidebar' : ''}`} style={{ position: 'relative', zIndex: 10 }}>
         <aside className={`sidebar ${settings.sidebarMode === 'Compact' ? 'compact' : settings.sidebarMode === 'Slim' ? 'slim' : ''} ${sidebarOpen ? 'open' : ''}`}>
