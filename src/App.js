@@ -17,8 +17,7 @@ const translations = {
     audioQualityDesc: 'Выберите предпочтительный битрейт',
     theme: 'Тема оформления',
     themeDesc: 'Настройте внешний вид интерфейса',
-    notifications: 'Уведомления',
-    notificationsDesc: 'Показывать уведомление при смене трека',
+
     importTitle: 'Импорт из SoundCloud',
     importDesc: 'Вставьте ссылку на профиль для импорта лайков',
     eq: 'Эквалайзер',
@@ -129,6 +128,9 @@ const translations = {
     discordRpcDesc: 'Показывать музыку в статусе Discord',
     discordClientId: 'Client ID приложения',
     discordClientIdDesc: 'Ваш ID приложения из Discord Developer Portal',
+    connChecking: 'Проверка...',
+    connConnected: 'Подключено',
+    connDisconnected: 'Нет связи (Bypass?)',
   },
   en: {
     home: 'Home',
@@ -144,8 +146,7 @@ const translations = {
     audioQualityDesc: 'Choose your preferred streaming bitrate',
     theme: 'Visual Theme',
     themeDesc: 'Customize the look of your interface',
-    notifications: 'Desktop Notifications',
-    notificationsDesc: 'Show track notifications on track change',
+
     importTitle: 'Import from SoundCloud',
     importDesc: 'Paste profile URL to import your favorites',
     eq: 'Equalizer',
@@ -256,6 +257,9 @@ const translations = {
     discordRpcDesc: 'Show what you are listening to on Discord',
     discordClientId: 'Application Client ID',
     discordClientIdDesc: 'Your Application ID from Discord Developer Portal',
+    connChecking: 'Checking...',
+    connConnected: 'Connected',
+    connDisconnected: 'Offline (Bypass?)',
   }
 };
 
@@ -294,12 +298,13 @@ function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isGuestMode, setIsGuestMode] = useState(false);
   const [isMini, setIsMini] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('checking'); // 'checking', 'connected', 'disconnected'
 
 
   const [settings, setSettings] = useState({
     audioQuality: 'High',
     theme: 'Deep Space',
-    notifications: true,
+
     eq: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     language: 'ru',
     crossfade: true,
@@ -317,7 +322,8 @@ function App() {
       bgPanel: '#121214',
       bgElevated: '#1c1c1f',
       textMain: '#ffffff',
-      textSecondary: '#a1a1aa'
+      textSecondary: '#a1a1aa',
+      cardSize: 180
     }
   });
 
@@ -357,6 +363,30 @@ function App() {
       sound.loop(isLooping);
     }
   }, [isLooping, sound]);
+
+  // Check SoundCloud connectivity on mount
+  useEffect(() => {
+    const checkConnection = async () => {
+      if (!window.electronAPI) {
+        setConnectionStatus('disconnected');
+        return;
+      }
+
+      try {
+        // Try to fetch a simple endpoint to test connectivity
+        await window.electronAPI.searchTracks('test', null);
+        setConnectionStatus('connected');
+      } catch (error) {
+        setConnectionStatus('disconnected');
+      }
+    };
+
+    checkConnection();
+    // Re-check every 30 seconds
+    const interval = setInterval(checkConnection, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
 
   useEffect(() => {
     let interval;
@@ -629,13 +659,6 @@ function App() {
             setTimeout(() => {
               connectEQ();
             }, 100);
-
-            if (settings.notifications && window.electronAPI) {
-              window.electronAPI.showNotification({
-                title: track.title,
-                body: track.user?.username || 'Unknown Artist',
-              });
-            }
           }
 
           if (window.electronAPI && window.electronAPI.rpcUpdate) {
@@ -1015,12 +1038,9 @@ function App() {
           // Auto-sync likes and playlists from SoundCloud on startup
           if (user && user.permalink_url) {
             try {
-              const [updatedLikes, updatedPlaylists] = await Promise.all([
-                window.electronAPI.importSCLikes(user.permalink_url),
-                window.electronAPI.importSCPlaylists(user.permalink_url)
-              ]);
-              setLikedTracks(updatedLikes);
-              setLikedPlaylists(updatedPlaylists);
+              const { tracks, playlists } = await window.electronAPI.importSCLikes(user.permalink_url);
+              setLikedTracks(tracks);
+              setLikedPlaylists(playlists);
             } catch (err) {
               console.error('Auto-sync failed on startup:', err);
             }
@@ -1281,9 +1301,10 @@ function App() {
     }
     setIsImporting(true);
     try {
-      const updatedLikes = await window.electronAPI.importSCLikes(scProfileUrl);
-      setLikedTracks(updatedLikes);
-      alert(`${updatedLikes.length} tracks are now in your library!`);
+      const { tracks, playlists } = await window.electronAPI.importSCLikes(scProfileUrl);
+      setLikedTracks(tracks);
+      setLikedPlaylists(playlists);
+      alert(`${tracks.length} tracks and ${playlists.length} playlists synchronized!`);
       setScProfileUrl('');
     } catch (error) {
       console.error('Import failed:', error);
@@ -1377,12 +1398,9 @@ function App() {
 
           if (result.user.permalink_url) {
             try {
-              const [updatedLikes, updatedPlaylists] = await Promise.all([
-                window.electronAPI.importSCLikes(result.user.permalink_url),
-                window.electronAPI.importSCPlaylists(result.user.permalink_url)
-              ]);
-              setLikedTracks(updatedLikes);
-              setLikedPlaylists(updatedPlaylists);
+              const { tracks, playlists } = await window.electronAPI.importSCLikes(result.user.permalink_url);
+              setLikedTracks(tracks);
+              setLikedPlaylists(playlists);
             } catch (err) {
               console.error('Auto-sync failed:', err);
             }
@@ -1414,11 +1432,20 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    // Apply card size from custom theme if active
+    if (settings.theme === 'Custom' && settings.customTheme && settings.customTheme.cardSize) {
+      document.documentElement.style.setProperty('--card-size', `${settings.customTheme.cardSize}px`);
+    } else {
+      document.documentElement.style.removeProperty('--card-size');
+    }
+  }, [settings.theme, settings.customTheme]);
+
   const isLiked = (item) => {
     if (item.kind === 'playlist') {
-      return likedPlaylists.some(p => p.id === item.id);
+      return Array.isArray(likedPlaylists) && likedPlaylists.some(p => p.id === item.id);
     }
-    return likedTracks.some(t => t.id === item.id);
+    return Array.isArray(likedTracks) && likedTracks.some(t => t.id === item.id);
   };
 
 
@@ -1536,6 +1563,7 @@ function App() {
               src={selectedPlaylist.artwork_url ? selectedPlaylist.artwork_url.replace('large', 't500x500') : placeholderImg}
               onError={(e) => { e.target.onerror = null; e.target.src = placeholderImg; }}
               alt={selectedPlaylist.title}
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
             />
           </div>
           <div style={{ paddingBottom: '12px' }}>
@@ -1875,11 +1903,9 @@ function App() {
                 </div>
 
                 <div className="setting-item" style={{ alignItems: 'flex-start', flexDirection: 'column' }}>
-                  <div className="setting-info" style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <div>
-                      <h3>{t('theme')}</h3>
-                      <p>{t('themeDesc')}</p>
-                    </div>
+                  <div>
+                    <h3>{t('theme')}</h3>
+                    <p>{t('themeDesc')}</p>
                   </div>
                   <select
                     value={settings.theme}
@@ -2025,6 +2051,26 @@ function App() {
                             <option value="100% 100%">{t('bgFill')}</option>
                           </select>
                         </div>
+                      </div>
+
+                      {/* Card Size Section */}
+                      <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '20px', marginTop: '20px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                          <label style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>Card Size</label>
+                          <span style={{ fontSize: '11px', color: 'var(--text-main)', fontWeight: 600 }}>{settings.customTheme?.cardSize || 180}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="120"
+                          max="300"
+                          step="10"
+                          value={settings.customTheme?.cardSize || 180}
+                          onChange={(e) => {
+                            const newCustomTheme = { ...settings.customTheme, cardSize: parseInt(e.target.value) };
+                            setSettings({ ...settings, customTheme: newCustomTheme });
+                          }}
+                          style={{ width: '100%', accentColor: 'var(--primary)' }}
+                        />
                       </div>
 
                     </div>
@@ -2335,18 +2381,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="setting-item">
-                  <div className="setting-info">
-                    <h3>{t('notifications')}</h3>
-                    <p>{t('notificationsDesc')}</p>
-                  </div>
-                  <div
-                    className={`toggle-switch ${settings.notifications ? 'active' : ''}`}
-                    onClick={() => setSettings({ ...settings, notifications: !settings.notifications })}
-                  >
-                    <div className="toggle-thumb"></div>
-                  </div>
-                </div>
+
 
                 <div className="eq-section" style={{ marginTop: '20px' }}>
                   <div className="setting-info" style={{ marginBottom: '16px' }}>
@@ -2614,7 +2649,30 @@ function App() {
       <div className="title-bar">
         <div className="title-info">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="var(--primary)"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-5-9h10v2H7z" /></svg>
-          <span>SoundCloud Desktop</span>
+          <span style={{ marginRight: '8px' }}>SoundCloud Desktop</span>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            background: 'var(--bg-elevated)',
+            padding: '2px 8px',
+            borderRadius: '12px',
+            fontSize: '10px',
+            border: '1px solid var(--border-dim)',
+            marginLeft: '4px'
+          }}>
+            <div style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: connectionStatus === 'connected' ? '#10b981' : (connectionStatus === 'checking' ? '#f59e0b' : '#ef4444'),
+              boxShadow: connectionStatus === 'connected' ? '0 0 6px #10b981' : 'none'
+            }} />
+            <span style={{ color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+              {connectionStatus === 'connected' ? t('connConnected') : (connectionStatus === 'checking' ? t('connChecking') : t('connDisconnected'))}
+            </span>
+          </div>
         </div>
         <div className="window-controls">
           <button className="control-btn" onClick={() => window.electronAPI.toggleMiniPlayer()} title="Toggle Mini-Player">

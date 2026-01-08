@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, Tray, Menu, Notification, globalShortcut, dialog, net: electronNet } = require('electron');
+const { app, BrowserWindow, ipcMain, session, Tray, Menu, globalShortcut, dialog, net: electronNet } = require('electron');
 
 // Load environment variables
 require('dotenv').config();
@@ -416,15 +416,6 @@ function createWindow() {
     }
   });
 
-  ipcMain.on('show-notification', (event, { title, body, silent }) => {
-    new Notification({
-      title,
-      body,
-      silent,
-      icon: path.join(__dirname, 'src', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png')
-    }).show();
-  });
-
 
   const isDev = !app.isPackaged;
 
@@ -441,34 +432,41 @@ function createWindow() {
 
 
   mainWindow.once('ready-to-show', () => {
-    autoUpdater.checkForUpdatesAndNotify();
+    if (!isDev) {
+      autoUpdater.checkForUpdates().catch(err => {
+        console.error('Failed to check for updates:', err);
+      });
+    }
   });
 }
 
+// Update Configuration
+autoUpdater.autoDownload = true;
+autoUpdater.allowPrerelease = false;
 
-autoUpdater.on('update-available', () => {
-  if (mainWindow) {
-    mainWindow.webContents.send('show-notification', {
-      title: 'Обновление доступно',
-      body: 'Новая версия загружается...',
-      silent: false
-    });
-  }
+autoUpdater.on('checking-for-update', () => {
+  console.log('[Updater] Checking for updates...');
 });
 
-autoUpdater.on('update-downloaded', () => {
-  if (mainWindow) {
-    mainWindow.webContents.send('show-notification', {
-      title: 'Обновление готово',
-      body: 'Перезапустите приложение для установки',
-      silent: false
-    });
+autoUpdater.on('update-available', (info) => {
+  console.log('[Updater] Update available:', info.version);
+});
 
-  }
+autoUpdater.on('update-not-available', () => {
+  console.log('[Updater] No update available.');
 });
 
 autoUpdater.on('error', (err) => {
-  console.error('Auto-update error:', err);
+  console.error('[Updater] Error:', err);
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+  const logMessage = `[Updater] Download speed: ${progressObj.bytesPerSecond} - ${progressObj.percent}% (${progressObj.transferred}/${progressObj.total})`;
+  console.log(logMessage);
+});
+
+autoUpdater.on('update-downloaded', () => {
+  console.log('[Updater] Update downloaded. Installing on quit.');
 });
 
 ipcMain.handle('search-tracks', async (event, query, nextHref = null) => {
@@ -698,62 +696,17 @@ ipcMain.handle('toggle-like', async (event, track) => {
       const likeUrl = `https://api-v2.soundcloud.com/users/${SC_USER.id}/track_likes/${track.id}?client_id=${CLIENT_ID}`;
       const method = isLiking ? 'PUT' : 'DELETE';
 
-      let syncWindow = null;
-      const closeSyncWindow = () => {
-        if (syncWindow && !syncWindow.isDestroyed()) {
-          syncWindow.close();
-          syncWindow = null;
+      // Use makeRequest which respects proxy settings
+      makeRequest(likeUrl, {
+        method: method,
+        headers: {
+          'Authorization': `OAuth ${OAUTH_TOKEN}`
         }
-      };
-
-      try {
-        syncWindow = new BrowserWindow({
-          show: false,
-          webPreferences: { nodeIntegration: false, contextIsolation: true }
-        });
-
-        // Set timeout to force close window after 10 seconds
-        const timeoutId = setTimeout(() => {
-          closeSyncWindow();
-        }, 10000);
-
-        syncWindow.on('closed', () => {
-          clearTimeout(timeoutId);
-          syncWindow = null;
-        });
-
-        syncWindow.loadURL('https://soundcloud.com').then(() => {
-          const script = `
-            fetch('${likeUrl}', {
-              method: '${method}',
-              headers: {
-                'Authorization': 'OAuth ${OAUTH_TOKEN}',
-                'Content-Type': 'application/json'
-              },
-              credentials: 'include'
-            }).then(r => r.ok ? 'OK' : r.status).catch(e => e.message);
-          `;
-          syncWindow.webContents.executeJavaScript(script).then(result => {
-            if (result === 'OK') {
-              console.log('✔ ${method === "PUT" ? "Like" : "Unlike"} synced to SoundCloud');
-            } else {
-              console.warn('SC Sync result:', result);
-            }
-            clearTimeout(timeoutId);
-            closeSyncWindow();
-          }).catch(e => {
-            console.warn('SC Sync error:', e.message);
-            clearTimeout(timeoutId);
-            closeSyncWindow();
-          });
-        }).catch(() => {
-          clearTimeout(timeoutId);
-          closeSyncWindow();
-        });
-      } catch (e) {
-        console.error('Failed to create sync window:', e);
-        closeSyncWindow();
-      }
+      }).then(() => {
+        console.log(`✔ ${method === "PUT" ? "Like" : "Unlike"} synced to SoundCloud`);
+      }).catch(e => {
+        console.warn('SC Sync error:', e.message || e);
+      });
     }
 
     return _likes;
@@ -1007,7 +960,49 @@ ipcMain.handle('import-sc-likes', async (event, profileUrl) => {
       fs.writeFileSync(LIKES_FILE, JSON.stringify(_likes));
     }
 
-    return _likes;
+    // --- PLAYLIST IMPORT LOGIC ---
+    const allSCPlaylists = [];
+    let playlistsUrl = `https://api-v2.soundcloud.com/users/${userId}/playlists_without_albums?client_id=${CLIENT_ID}&limit=200&offset=0`;
+
+    while (playlistsUrl && allSCPlaylists.length < 500) {
+      const res = await makeRequest(playlistsUrl, { headers }).catch(() => ({ data: { collection: [] } }));
+      const collection = res.data.collection || [];
+      collection.forEach(item => {
+        if (item && item.id) allSCPlaylists.push(item);
+      });
+      playlistsUrl = res.data.next_href ? `${res.data.next_href}&client_id=${CLIENT_ID}` : null;
+      if (!res.data.next_href) break;
+    }
+
+    let likedPlaylistsUrl = `https://api-v2.soundcloud.com/users/${userId}/playlist_likes?client_id=${CLIENT_ID}&limit=200&offset=0`;
+    while (likedPlaylistsUrl && allSCPlaylists.length < 500) {
+      const res = await makeRequest(likedPlaylistsUrl, { headers }).catch(() => ({ data: { collection: [] } }));
+      const collection = res.data.collection || [];
+      collection.forEach(item => {
+        if (item && item.playlist) allSCPlaylists.push(item.playlist);
+      });
+      likedPlaylistsUrl = res.data.next_href ? `${res.data.next_href}&client_id=${CLIENT_ID}` : null;
+      if (!res.data.next_href) break;
+    }
+
+    // Read existing playlists
+    let existingPlaylists = [];
+    try {
+      const data = fs.readFileSync(PLAYLISTS_FILE);
+      existingPlaylists = JSON.parse(data);
+    } catch (e) {
+      existingPlaylists = [];
+    }
+
+    const localPlaylistIds = new Set(existingPlaylists.map(p => p.id));
+    const newPlaylists = allSCPlaylists.filter(p => p && p.id && !localPlaylistIds.has(p.id));
+
+    if (newPlaylists.length > 0) {
+      existingPlaylists = [...newPlaylists, ...existingPlaylists];
+      fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(existingPlaylists));
+    }
+
+    return { tracks: _likes, playlists: existingPlaylists };
   } catch (error) {
     console.error('Import error details:', error.response ? error.response.status + ' ' + JSON.stringify(error.response.data) : error.message);
     throw error;
