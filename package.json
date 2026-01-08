@@ -1,0 +1,87 @@
+{
+  "name": "soundcloud-desktop",
+  "version": "1.0.7",
+  "author": "SoundCloud Desktop",
+  "description": "Desktop SoundCloud clone",
+  "homepage": ".",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dissstructed1337/soundcloud-desktop"
+  },
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently \"npm run react-dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "react-dev": "react-scripts start",
+    "build": "react-scripts build",
+    "dist": "npm run build && electron-builder",
+    "package": "npm run build && electron-packager . SoundCloudDesktop --platform=win32 --arch=x64 --out=release --overwrite --icon=src/assets/icon.png",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "build": {
+    "extends": null,
+    "appId": "com.soundcloud.desktop",
+    "productName": "SoundCloud Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "build/**/*",
+      "main.js",
+      "preload.js",
+      "src/assets/icon.ico",
+      "src/assets/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "src/assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dissstructed1337",
+        "repo": "soundcloud-desktop"
+      }
+    ]
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "discord-rpc": "^4.0.1",
+    "dotenv": "^17.2.3",
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.6.2",
+    "howler": "^2.2.3",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "socks-proxy-agent": "^8.0.5",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0",
+    "electron": "^25.0.0",
+    "electron-builder": "^26.0.12",
+    "electron-packager": "^17.1.2",
+    "react-scripts": "5.0.1",
+    "wait-on": "^7.0.1"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
