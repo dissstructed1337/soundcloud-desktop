@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Howl } from 'howler';
+import { Howl, Howler } from 'howler';
 import './index.css';
 const translations = {
   ru: {
@@ -158,6 +158,8 @@ const translations = {
     flowModeDesc: 'Автоматически включать похожие треки, когда очередь заканчивается',
     startStation: 'Запустить станцию',
     shareCard: 'Поделиться карточкой',
+    nothingPlaying: 'Ничего не воспроизводится',
+    playbackSpeed: 'Скорость воспроизведения',
   },
   en: {
     home: 'Home',
@@ -317,6 +319,7 @@ const translations = {
     startStation: 'Start Station',
     shareCard: 'Share Card',
     playbackSpeed: 'Playback Speed',
+    nothingPlaying: 'Nothing playing',
   }
 };
 function App() {
@@ -430,6 +433,12 @@ function App() {
   const isLoopingRef = useRef(false);
   const isShuffledRef = useRef(false);
   const soundRef = useRef(null);
+  const volumeRef = useRef(1);
+  const playbackRateRef = useRef(1);
+  const settingsRef = useRef(settings);
+  useEffect(() => { volumeRef.current = volume; }, [volume]);
+  useEffect(() => { playbackRateRef.current = playbackRate; }, [playbackRate]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
   useEffect(() => { queueRef.current = currentQueue; }, [currentQueue]);
   useEffect(() => { isLoopingRef.current = isLooping; }, [isLooping]);
@@ -540,7 +549,7 @@ function App() {
   useEffect(() => {
     const handleMouseNav = (e) => {
       if (e.button === 3 || e.button === 4) {
-        const TABS = ['Home', 'Discover', 'Library', 'Playlists', 'Analytics'];
+        const TABS = ['Home', 'Discover', 'Library', 'Playlists', 'Player', 'Analytics'];
         const currentIndex = TABS.indexOf(activeTab);
         if (currentIndex === -1) return;
         const direction = e.button === 3 ? 1 : -1;
@@ -816,7 +825,7 @@ function App() {
     if (idx !== -1 && idx < q.length - 1) {
       const nextTrack = q[idx + 1];
       playTrackSecure(nextTrack);
-    } else if (settings.flowMode) {
+    } else if (settingsRef.current.flowMode) {
       console.log('Flow Mode: Queue ended. Fetching station tracks...');
       if (window.electronAPI) {
         try {
@@ -861,7 +870,10 @@ function App() {
     setDuration(0);
     isTransitioningRef.current = true;
     const previousSound = sound;
-    const useCrossfade = settings.crossfade && !isLoopingRef.current;
+    const currentVolume = volumeRef.current;
+    const currentRate = playbackRateRef.current;
+    const currentSettings = settingsRef.current;
+    const useCrossfade = currentSettings.crossfade && !isLoopingRef.current;
     if (previousSound) {
       previousSound.off();
     }
@@ -875,20 +887,20 @@ function App() {
         src: [streamUrl],
         html5: false,
         format: ['mp3', 'mpeg'],
-        volume: useCrossfade ? 0 : volume,
-        rate: playbackRate,
-        loop: isLooping,
+        volume: useCrossfade ? 0 : 1,
+        rate: currentRate,
+        loop: isLoopingRef.current,
         onplay: () => {
           setIsPlaying(true);
           setDuration(newSound.duration());
           if (useCrossfade) {
-            newSound.fade(0, volume, (settings.crossfadeDuration || 2500));
+            newSound.fade(0, 1, (currentSettings.crossfadeDuration || 2500));
           }
           if (previousSound && useCrossfade) {
-            previousSound.fade(previousSound.volume(), 0, (settings.crossfadeDuration || 2500));
+            previousSound.fade(previousSound.volume(), 0, (currentSettings.crossfadeDuration || 2500));
             setTimeout(() => {
               try { previousSound.unload(); } catch (e) { }
-            }, (settings.crossfadeDuration || 2500) + 1000);
+            }, (currentSettings.crossfadeDuration || 2500) + 1000);
           }
           isTransitioningRef.current = false;
           if (window.Howler && window.Howler.ctx) {
@@ -1088,10 +1100,8 @@ function App() {
     setIsShuffled(!isShuffled);
   };
   useEffect(() => {
-    if (sound) {
-      sound.volume(volume);
-    }
-  }, [volume, sound]);
+    Howler.volume(volume);
+  }, [volume]);
   const connectEQ = () => {
     if (typeof window === 'undefined' || !window.Howler || !window.Howler.ctx || window.Howler.ctx.state === 'closed') return;
     const ctx = window.Howler.ctx;
@@ -1156,6 +1166,8 @@ function App() {
           setLikedPlaylists(savedPlaylists);
           const hist = await window.electronAPI.getHistory();
           setHistory(hist);
+          const stats = await window.electronAPI.getStats();
+          setTrackStats(stats);
           const user = await window.electronAPI.getSCUser();
           setScUser(user);
           if (user && user.permalink_url) {
@@ -1365,11 +1377,15 @@ function App() {
       if (backgroundCanvasRef.current) {
         const canvas = backgroundCanvasRef.current;
         const ctx = canvas.getContext('2d');
+
         if (style === 'Particles') {
+          ctx.save();
+          ctx.globalCompositeOperation = 'destination-out';
           ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
           const average = dataArray.reduce((s, a) => s + a, 0) / bufferLength;
-          if (average > 100 && particles.length < maxParticles) {
+          if (average > 30 && particles.length < maxParticles) {
             particles.push({
               x: Math.random() * canvas.width, y: canvas.height + 10,
               vx: (Math.random() - 0.5) * 4, vy: -(Math.random() * 5 + 2),
@@ -1406,6 +1422,48 @@ function App() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [isPlaying, settings.visualizerStyle, settings.theme, settings.customThemeColor, viewingTrack]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Ignore if user is typing in an input field
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          togglePlay();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          playPrevious();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          playNext();
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setVolume(prev => Math.min(prev + 0.05, 1));
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          setVolume(prev => Math.max(prev - 0.05, 0));
+          break;
+        case 'KeyM':
+          setVolume(prev => (prev === 0 ? 0.5 : 0));
+          break;
+        case 'KeyL':
+          toggleLoop();
+          break;
+        case 'KeyS':
+          toggleShuffle();
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [togglePlay, playPrevious, playNext, toggleLoop, toggleShuffle]);
   const handleImportLikes = async () => {
     if (!scProfileUrl) return;
     if (!window.electronAPI) {
@@ -1610,15 +1668,27 @@ function App() {
           <h2 style={{ margin: 0, fontSize: '26px', fontWeight: 900, marginBottom: '4px' }}>{title}</h2>
           {subtitle && <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 500 }}>{subtitle}</p>}
         </div>
-        <div className="track-grid no-scrollbar" style={{
-          display: 'flex',
-          flexWrap: 'nowrap',
-          overflowX: 'auto',
-          paddingBottom: '12px',
-          gap: '24px',
-          margin: '-10px -10px 0 -10px',
-          padding: '10px 10px 12px 10px'
-        }}>
+        <div
+          className="track-grid no-scrollbar"
+          ref={(el) => {
+            if (el) {
+              el.onwheel = (e) => {
+                if (e.deltaY !== 0) {
+                  e.preventDefault();
+                  el.scrollLeft += e.deltaY;
+                }
+              };
+            }
+          }}
+          style={{
+            display: 'flex',
+            flexWrap: 'nowrap',
+            overflowX: 'auto',
+            paddingBottom: '12px',
+            gap: '24px',
+            margin: '-10px -10px 0 -10px',
+            padding: '10px 10px 12px 10px'
+          }}>
           {items.map(item => (
             <div key={`${title}-${item.id}`} className="track-card ripple" style={{ minWidth: '200px', width: '200px' }} onClick={() => playTrackSecure(item, items)}>
               <button
@@ -2047,8 +2117,8 @@ function App() {
             >
               <h3 style={{ margin: '0 0 16px 0', fontSize: '14px', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Artist</h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '60px', height: '60px', borderRadius: '50%', overflow: 'hidden' }}>
-                  <img src={viewingTrack.user?.avatar_url} style={{ width: '100%', height: '100%' }} alt="Artist" />
+                <div style={{ width: '60px', height: '60px', borderRadius: '50%', overflow: 'hidden', flexShrink: 0 }}>
+                  <img src={viewingTrack.user?.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} alt="Artist" />
                 </div>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: '16px', marginBottom: '4px' }}>{viewingTrack.user?.username}</div>
@@ -2324,6 +2394,316 @@ function App() {
               </div>
             )}
           </section>
+        );
+
+      case 'Player':
+        if (!currentTrack) {
+          return (
+            <div className="content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', flexDirection: 'column', color: 'var(--text-secondary)' }}>
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="currentColor" style={{ opacity: 0.5, marginBottom: '20px' }}><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg>
+              <h2>{t('nothingPlaying')}</h2>
+              <p>{t('startListeningDesc')}</p>
+            </div>
+          );
+        }
+
+        const queue = currentQueue;
+        let nextTracks = [];
+        if (queue && queue.length > 0) {
+          const currentIndex = queue.findIndex(t => String(t.id) === String(currentTrack.id));
+          if (currentIndex !== -1) {
+            nextTracks = queue.slice(currentIndex + 1);
+          }
+        }
+
+        return (
+          <div className="content" style={{ padding: 0, height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+            {/* Player Section - Takes up more vertical space (~2/3) */}
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '40px',
+              position: 'relative',
+              minHeight: '65vh',
+              boxSizing: 'border-box'
+            }}>
+              {/* Background Blur */}
+              <div style={{
+                position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+                backgroundImage: `url(${currentTrack.artwork_url ? currentTrack.artwork_url.replace('-large', '-t500x500') : placeholderImg})`,
+                backgroundSize: 'cover', backgroundPosition: 'center',
+                filter: 'blur(80px) brightness(0.25)', zIndex: 0
+              }} />
+
+              {/* Inner container for horizontal layout of artwork + controls */}
+              <div style={{ zIndex: 1, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '60px', width: '100%', maxWidth: '900px', justifyContent: 'center' }}>
+                {/* Artwork */}
+                <div style={{
+                  width: '320px',
+                  height: '320px',
+                  flexShrink: 0,
+                  borderRadius: '20px',
+                  overflow: 'hidden',
+                  boxShadow: '0 20px 50px rgba(0,0,0,0.6)',
+                  border: '1px solid rgba(255,255,255,0.1)'
+                }}>
+                  <img
+                    src={currentTrack.artwork_url ? currentTrack.artwork_url.replace('-large', '-t500x500') : placeholderImg}
+                    alt={currentTrack.title}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                </div>
+
+                {/* Controls */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '24px', minWidth: '300px' }}>
+                  <div>
+                    <h1 style={{ fontSize: '36px', fontWeight: 900, marginBottom: '8px', lineHeight: 1.1 }}>{currentTrack.title}</h1>
+                    <h2
+                      onClick={() => { setActiveTab('Discover'); setViewingTrack(null); openArtist(currentTrack.user); }}
+                      style={{ fontSize: '20px', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 500 }}
+                    >
+                      {currentTrack.user?.username || 'Unknown Artist'}
+                    </h2>
+                  </div>
+
+                  {/* Seek Bar */}
+                  <div className="progress-container" onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '16px', cursor: 'default' }}>
+                    <span style={{ fontSize: '13px', color: 'var(--text-secondary)', minWidth: '40px', fontVariantNumeric: 'tabular-nums' }}>{formatTime(seek)}</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration || 0}
+                      step={0.1}
+                      value={seek}
+                      onChange={handleSeek}
+                      className="seek-slider"
+                      style={{
+                        flex: 1,
+                        margin: 0,
+                        height: '6px',
+                        background: `linear-gradient(to right, var(--primary) ${(seek / duration) * 100}%, rgba(255,255,255,0.1) ${(seek / duration) * 100}%)`,
+                        cursor: 'pointer'
+                      }}
+                    />
+                    <span style={{ fontSize: '13px', color: 'var(--text-secondary)', minWidth: '40px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatTime(duration)}</span>
+                  </div>
+
+                  {/* Main Buttons Row */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '32px', marginBottom: '10px' }}>
+                    <button className="icon-btn" onClick={toggleShuffle} style={{ color: isShuffled ? 'var(--primary)' : 'var(--text-secondary)' }}>
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+                    </button>
+                    <button className="icon-btn" onClick={playPrevious}>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" /></svg>
+                    </button>
+                    <button
+                      onClick={togglePlay}
+                      style={{
+                        width: '72px', height: '72px', borderRadius: '50%', background: 'var(--primary)', color: 'white', border: 'none',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                        transition: 'transform 0.1s', flexShrink: 0
+                      }}
+                    >
+                      {isPlaying ? (
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+                      ) : (
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                      )}
+                    </button>
+                    <button className="icon-btn" onClick={playNext}>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z" /></svg>
+                    </button>
+                    <button className="icon-btn" onClick={toggleLoop} style={{ color: isLooping ? 'var(--primary)' : 'var(--text-secondary)' }}>
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+                    </button>
+                  </div>
+
+                  {/* Secondary Controls Row (Like, Gear, Volume) */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '40px' }}>
+                    {/* Like Button */}
+                    <button
+                      className={`icon-btn ${isLiked(currentTrack) ? 'liked' : ''}`}
+                      onClick={(e) => handleToggleLike(e, currentTrack)}
+                      title={isLiked(currentTrack) ? "Unlike" : "Like"}
+                      style={{ color: isLiked(currentTrack) ? 'var(--primary)' : 'var(--text-secondary)' }}
+                    >
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill={isLiked(currentTrack) ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></svg>
+                    </button>
+
+                    {/* Gear / Options */}
+                    <div className="rate-menu-container" style={{ position: 'relative' }}>
+                      <button
+                        className="icon-btn"
+                        onClick={(e) => { e.stopPropagation(); setTrackMenuOpen(!trackMenuOpen); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        title="Track Options"
+                        style={{ color: trackMenuOpen || playbackRate !== 1 ? 'var(--primary)' : 'var(--text-secondary)' }}
+                      >
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                      </button>
+                      {trackMenuOpen && (
+                        <div className="rate-menu" style={{
+                          position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+                          marginBottom: '20px', minWidth: '220px', background: '#1c1c1f',
+                          border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '12px',
+                          boxShadow: '0 10px 40px rgba(0,0,0,0.7)', zIndex: 100,
+                          animation: 'fadeIn 0.1s ease-out'
+                        }} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+
+                          {/* Pointer Arrow (Pointing Down) */}
+                          <div style={{
+                            position: 'absolute', bottom: '-6px', left: '50%', transform: 'translateX(-50%) rotate(45deg)',
+                            width: '12px', height: '12px', background: '#1c1c1f', borderRight: '1px solid rgba(255,255,255,0.08)', borderBottom: '1px solid rgba(255,255,255,0.08)',
+                            zIndex: 101, borderRadius: '0 0 2px 0'
+                          }}></div>
+
+                          <div style={{ position: 'relative', zIndex: 102, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <button className="menu-btn" style={{
+                              display: 'flex', alignItems: 'center', gap: '12px', width: '100%', padding: '10px 12px',
+                              background: 'none', border: 'none', color: '#fff', cursor: 'pointer',
+                              borderRadius: '8px', textAlign: 'left', fontSize: '14px', transition: 'background 0.2s',
+                              fontWeight: 500
+                            }}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = 'none'}
+                              onClick={(e) => { handleStartStation(e, currentTrack); setTrackMenuOpen(false); }}>
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
+                              <span>{t('startStation')}</span>
+                            </button>
+                            <button className="menu-btn" style={{
+                              display: 'flex', alignItems: 'center', gap: '12px', width: '100%', padding: '10px 12px',
+                              background: 'none', border: 'none', color: '#fff', cursor: 'pointer',
+                              borderRadius: '8px', textAlign: 'left', fontSize: '14px', transition: 'background 0.2s',
+                              fontWeight: 500
+                            }}
+                              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                              onMouseOut={(e) => e.currentTarget.style.background = 'none'}
+                              onClick={(e) => { handleShare(e, currentTrack); setTrackMenuOpen(false); }}>
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+                              <span>{t('shareCard')}</span>
+                            </button>
+
+                            <div style={{ margin: '8px -12px 0 -12px', background: 'rgba(255,255,255,0.08)', height: '1px' }}></div>
+
+                            <div style={{ paddingTop: '10px', paddingLeft: '4px', paddingRight: '4px' }}>
+                              <span style={{ fontSize: '12px', color: '#9ca3af', fontWeight: 600, display: 'block', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{t('playbackSpeed')}</span>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '13px', color: '#d1d5db' }}>
+                                {[0.5, 1.0, 1.5, 2.0].map(r => (
+                                  <span key={r} onClick={() => handleRateChange(r)} style={{
+                                    cursor: 'pointer',
+                                    color: playbackRate === r ? 'var(--primary)' : 'inherit',
+                                    fontWeight: playbackRate === r ? 800 : 400,
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    background: playbackRate === r ? 'rgba(255,85,0,0.1)' : 'transparent'
+                                  }}>{r}x</span>
+                                ))}
+                              </div>
+                              <input
+                                type="range"
+                                min="0.5"
+                                max="2.0"
+                                step="0.05"
+                                value={playbackRate}
+                                onChange={(e) => handleRateChange(parseFloat(e.target.value))}
+                                className="rate-slider"
+                                style={{ width: '100%', height: '4px', cursor: 'grab' }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Volume */}
+                    <div className="volume-section" style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '140px' }}>
+                      <button className="icon-btn" onClick={() => setVolume(volume === 0 ? 1 : 0)} style={{ padding: '0', color: volume === 0 ? 'var(--text-muted)' : 'var(--text-secondary)' }}>
+                        {volume === 0 ? (
+                          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+                        ) : volume < 0.5 ? (
+                          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                        ) : (
+                          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                        )}
+                      </button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={volume}
+                        onChange={e => setVolume(Number(e.target.value))}
+                        className="volume-slider-minimal"
+                        style={{
+                          background: `linear-gradient(to right, var(--text-main) ${volume * 100}%, var(--bg-hover) ${volume * 100}%)`,
+                          flex: 1, height: '4px'
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Queue Section - Full Width */}
+            <div style={{
+              width: '100%',
+              background: 'var(--bg-dark)',
+              position: 'relative',
+              zIndex: 2,
+              padding: '40px',
+              borderTop: '1px solid var(--border-dim)',
+              minHeight: '35vh'
+            }}>
+              <div style={{ maxWidth: '100%', margin: '0 40px' }}> {/* Wide container */}
+                <div style={{ paddingBottom: '24px', borderBottom: '1px solid var(--border-dim)', marginBottom: '24px' }}>
+                  <h3 style={{ margin: 0, fontSize: '24px', fontWeight: 900 }}>Up Next</h3>
+                </div>
+                <div className="track-list" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {nextTracks.length > 0 ? nextTracks.map((track, i) => (
+                    <div
+                      key={`${track.id}-${i}`}
+                      className="track-list-item"
+                      onClick={() => playTrackSecure(track, queue)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '20px', padding: '16px', borderRadius: '12px',
+                        cursor: 'pointer', transition: 'background 0.2s', background: 'var(--bg-panel)'
+                      }}
+                      onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+                      onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-panel)'}
+                    >
+                      <img
+                        src={track.artwork_url ? track.artwork_url.replace('large', 't500x500') : placeholderImg}
+                        style={{ width: '60px', height: '60px', borderRadius: '8px', objectFit: 'cover' }}
+                        alt=""
+                      />
+                      <div style={{ flex: 1, overflow: 'hidden' }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 700, fontSize: '18px', color: 'var(--text-main)', marginBottom: '4px' }}>{track.title}</div>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '14px', color: 'var(--text-secondary)' }}>{track.user?.username}</div>
+                      </div>
+                      <div style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 600 }}>
+                        {formatTime((track.duration || track.full_duration) / 1000)}
+                      </div>
+                    </div>
+                  )) : (
+                    <div style={{ padding: '60px', textAlign: 'center', color: 'var(--text-secondary)', background: 'var(--bg-panel)', borderRadius: '16px' }}>
+                      {settings.flowMode ? (
+                        <>
+                          <svg width="48" height="48" viewBox="0 0 24 24" fill="var(--primary)" style={{ marginBottom: '16px', opacity: 0.8 }}><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
+                          <h3 style={{ margin: '0 0 8px 0', fontSize: '20px' }}>Flow Mode Active</h3>
+                          <p style={{ margin: 0, opacity: 0.7, fontSize: '15px' }}>We'll play similar tracks automatically.</p>
+                        </>
+                      ) : (
+                        <p style={{ fontSize: '15px' }}>End of queue. enable Flow Mode to keep playing.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         );
       case 'Playlists':
         return (
@@ -3397,6 +3777,9 @@ function App() {
               <li className={activeTab === 'Playlists' ? 'active' : ''} onClick={() => { setActiveTab('Playlists'); setSelectedPlaylist(null); setSelectedArtist(null); setViewingTrack(null); }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 10h12v2H4zm0-4h12v2H4zm0 8h8v2H4zm10 0v6l5-3-5-3z" /></svg> <span>{t('playlists')}</span>
               </li>
+              <li className={activeTab === 'Player' ? 'active' : ''} onClick={() => { setActiveTab('Player'); setSelectedPlaylist(null); setSelectedArtist(null); setViewingTrack(null); }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg> <span>{t('nowPlaying')}</span>
+              </li>
               <li className={activeTab === 'Analytics' ? 'active' : ''} onClick={() => { setActiveTab('Analytics'); setSelectedPlaylist(null); setSelectedArtist(null); setViewingTrack(null); }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11 20H4a1 1 0 01-1-1V5a1 1 0 011-1h7v16zm2 0h7a1 1 0 001-1V5a1 1 0 00-1-1h-7v16zm-7-7h2v2H6v-2zm0-4h2v2H6V9zm11 4h2v2h-2v-2zm0-4h2v2h-2V9z" /></svg> <span>{t('analytics')}</span>
               </li>
@@ -3407,23 +3790,25 @@ function App() {
           className="main-content"
           style={settings.dynamicBg ? { background: 'transparent' } : {}}
         >
-          <header className="App-header">
-            <h1>SoundCloud</h1>
-            {(activeTab === 'Home' || activeTab === 'Discover') && (
-              <div className="search-bar">
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={t('searchPlaceholder')}
-                  onKeyPress={(e) => e.key === 'Enter' && searchTracks(false)}
-                />
-                <button onClick={() => searchTracks(false)}>{t('search')}</button>
-              </div>
-            )}
-          </header>
+          {activeTab !== 'Player' && (
+            <header className="App-header">
+              <h1>SoundCloud</h1>
+              {(activeTab === 'Home' || activeTab === 'Discover') && (
+                <div className="search-bar">
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder={t('searchPlaceholder')}
+                    onKeyPress={(e) => e.key === 'Enter' && searchTracks(false)}
+                  />
+                  <button onClick={() => searchTracks(false)}>{t('search')}</button>
+                </div>
+              )}
+            </header>
+          )}
           {renderContent()}
-          {currentTrack && (
+          {currentTrack && activeTab !== 'Player' && (
             <footer className={`player ${settings.sidebarMode === 'Compact' ? 'full-width' : settings.sidebarMode === 'Slim' ? 'slim-sidebar' : ''}`}>
               <div className="play-controls" style={{ flexShrink: 0 }}>
                 <button className="icon-btn" onClick={playPrevious}>
@@ -3462,7 +3847,7 @@ function App() {
               <div className="player-meta-minimal" onClick={() => setViewingTrack(currentTrack)} style={{ cursor: 'pointer' }}>
                 <span className="player-title-minimal" title="View Track Details">{currentTrack.title}</span>
                 <span className="player-artist-minimal">{currentTrack.user?.username || 'Unknown Artist'}</span>
-                <div className="progress-container" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '8px', marginTop: '6px' }}>
+                <div className="progress-container" onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '8px', marginTop: '6px', cursor: 'default' }}>
                   <span style={{ fontSize: '10px', color: 'var(--text-secondary)', minWidth: '38px', flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{formatTime(seek)}</span>
                   <input
                     type="range"
@@ -3476,6 +3861,7 @@ function App() {
                       flex: 1,
                       margin: 0,
                       background: `linear-gradient(to right, var(--primary) ${(seek / duration) * 100}%, var(--bg-hover) ${(seek / duration) * 100}%)`,
+                      cursor: 'pointer'
                     }}
                   />
                   <span style={{ fontSize: '10px', color: 'var(--text-secondary)', minWidth: '38px', textAlign: 'right', flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{formatTime(duration)}</span>

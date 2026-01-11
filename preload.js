@@ -45,7 +45,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('media-control', listener);
     },
     toggleMiniPlayer: () => ipcRenderer.send('window-toggle-mini'),
-    // Discord RPC methods
     rpcUpdate: (data) => ipcRenderer.send('rpc-update', data),
     rpcClear: () => ipcRenderer.send('rpc-clear'),
     onMiniPlayerState: (callback) => {
@@ -53,7 +52,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('mini-player-state', listener);
         return () => ipcRenderer.removeListener('mini-player-state', listener);
     },
-    // Custom Updater
     installUpdate: () => ipcRenderer.invoke('install-update'),
     onUpdateAvailable: (callback) => {
         const listener = (event, version) => callback(version);
@@ -71,3 +69,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('update-downloaded', listener);
     },
 });
+

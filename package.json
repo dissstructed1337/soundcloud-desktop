@@ -1,6 +1,6 @@
 {
   "name": "soundcloud-desktop",
-  "version": "3.0.0",
+  "version": "3.1.1",
   "author": "SoundCloud Desktop",
   "description": "Desktop SoundCloud clone",
   "homepage": ".",
@@ -23,6 +23,7 @@
     "extends": null,
     "appId": "com.soundcloud.desktop",
     "productName": "SoundCloud Desktop",
+    "copyright": "Copyright © 2026 dissstructed1337",
     "directories": {
       "output": "dist"
     },
@@ -36,11 +37,23 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "src/assets/icon.ico"
+      "icon": "src/assets/icon.ico",
+      "publisherName": "dissstructed1337",
+      "extraResources": [
+        {
+          "from": "goodbyedpi-0.2.3rc3-2",
+          "to": "goodbyedpi-0.2.3rc3-2",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "displayAppName": "SoundCloud Desktop",
+      "installerHeaderIcon": "src/assets/icon.ico"
     },
     "publish": [
       {

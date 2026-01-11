@@ -94,7 +94,7 @@
   --bg-elevated: rgba(255, 255, 255, 0.05);
   --bg-hover: rgba(255, 255, 255, 0.1);
   --bg-gradient: none;
-  /* Primary color is injected via JS */
+
   --text-main: #ffffff;
   --text-secondary: rgba(255, 255, 255, 0.85);
   --text-muted: rgba(255, 255, 255, 0.5);
@@ -1646,7 +1646,7 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* Glassy Vibe Styles */
+
 .App[data-vibe="true"] .sidebar {
   background-color: rgba(18, 18, 20, 0.4) !important;
   backdrop-filter: blur(20px);

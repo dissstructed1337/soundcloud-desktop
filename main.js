@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, session, Tray, Menu, globalShortcut, dialog, net: electronNet } = require('electron');
+const { spawn } = require('child_process');
 require('dotenv').config();
 
 app.name = 'SoundCloud Desktop';
@@ -15,7 +16,8 @@ const fs = require('fs');
 const net = require('net');
 const DiscordRPC = require('discord-rpc');
 let rpc;
-let rpcClientId = '1458763452041662618'; // Public Discord Application ID (Safe to share)
+let rpcClientId = '1458763452041662618';
+let goodbyeDpiProcess = null;
 const CURRENT_VERSION = app.getVersion();
 const REPO_OWNER = 'dissstructed1337';
 const REPO_NAME = 'soundcloud-desktop';
@@ -326,7 +328,7 @@ async function makeRequest(url, options = {}, retries = 1) {
       session: session.defaultSession
     });
 
-    // Mirror a real Chrome request to bypass bot detection
+
     request.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     request.setHeader('Accept', 'application/json, text/plain, */*');
     request.setHeader('Accept-Language', 'en-US,en;q=0.9');
@@ -589,7 +591,7 @@ ipcMain.handle('search-users', async (event, query, next_href) => {
 
 ipcMain.handle('get-artist-details', async (event, userId) => {
   try {
-    // if (!CLIENT_ID) throw new Error('Client ID not found');
+
 
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -628,13 +630,13 @@ ipcMain.handle('get-artist-details', async (event, userId) => {
 
 
 
-// Likes initialization handled at top
+
 
 function cleanOldCache() {
   try {
     const files = fs.readdirSync(AUDIO_CACHE_DIR);
     const now = Date.now();
-    const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const maxAge = 7 * 24 * 60 * 60 * 1000;
 
     let deletedCount = 0;
     files.forEach(file => {
@@ -662,7 +664,7 @@ let _likes = [];
 try { _likes = JSON.parse(fs.readFileSync(LIKES_FILE)); } catch (e) { _likes = []; }
 
 
-// Initialized at top
+
 
 ipcMain.handle('get-likes', async () => {
   return _likes;
@@ -717,7 +719,7 @@ async function processSyncQueue() {
   const method = isLiking ? 'PUT' : 'DELETE';
   const endpoint = type === 'track' ? 'track_likes' : 'playlist_likes';
 
-  // Try to use SC_USER.id if available, fallback to 'me'
+
   const userId = (SC_USER && SC_USER.id) ? SC_USER.id : 'me';
   const url = `https://api-v2.soundcloud.com/users/${userId}/${endpoint}/${itemId}?client_id=${CLIENT_ID}`;
 
@@ -790,7 +792,7 @@ ipcMain.handle('clear-likes', async () => {
 
 ipcMain.handle('get-recommendations', async (event, trackIds) => {
   try {
-    // if (!CLIENT_ID) throw new Error('Client ID not found');
+
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Accept': 'application/json'
@@ -839,27 +841,56 @@ ipcMain.handle('get-recommendations', async (event, trackIds) => {
 
 ipcMain.handle('get-charts', async (event, genre = 'soundcloud:genres:all-music') => {
   try {
-    if (!CLIENT_ID) throw new Error('Client ID not found');
+
+    if (!CLIENT_ID) await getClientId();
 
     let finalGenre = genre;
-    // Keep it simple - API usually expects 'all-music' or 'soundcloud:genres:all-music'
     if (finalGenre === 'soundcloud:all-music') finalGenre = 'all-music';
     if (!finalGenre.startsWith('soundcloud:genres:') && finalGenre !== 'all-music') {
       finalGenre = `soundcloud:genres:${finalGenre}`;
     }
 
-    // Region might be required for some calls
-    const url = `https://api-v2.soundcloud.com/charts?kind=top&genre=${encodeURIComponent(finalGenre)}&region=soundcloud:regions:all-nations&client_id=${CLIENT_ID}&limit=50&offset=0`;
-    const response = await makeRequest(url);
+    const constructUrl = (withRegion) => {
+      let u = `https://api-v2.soundcloud.com/charts?kind=top&genre=${encodeURIComponent(finalGenre)}&client_id=${CLIENT_ID}&limit=50&offset=0`;
+      if (withRegion) u += '&region=soundcloud:regions:all-nations';
+      return u;
+    };
 
-    if (response.data && response.data.collection) {
-      return response.data.collection
-        .filter(item => item && item.track)
-        .map(item => item.track);
+    try {
+
+      const response = await makeRequest(constructUrl(true));
+      if (response.data && response.data.collection) {
+        return response.data.collection
+          .filter(item => item && item.track)
+          .map(item => item.track);
+      }
+    } catch (firstError) {
+
+      if (firstError.response && (firstError.response.status === 400 || firstError.response.status === 404)) {
+        try {
+          const fallbackResponse = await makeRequest(constructUrl(false));
+          if (fallbackResponse.data && fallbackResponse.data.collection) {
+            return fallbackResponse.data.collection
+              .filter(item => item && item.track)
+              .map(item => item.track);
+          }
+        } catch (secondError) {
+          if (secondError.response && (secondError.response.status === 400 || secondError.response.status === 404)) {
+            return [];
+          }
+          console.warn('[Charts] Fallback failed:', secondError.message || secondError);
+          return [];
+        }
+      }
+
+
+      console.warn('[Charts] Initial fetch failed:', firstError.message || firstError);
+      return [];
     }
+
     return [];
   } catch (error) {
-    console.error('Charts error:', error);
+    console.error('Charts error (critical):', error);
     return [];
   }
 });
@@ -868,7 +899,7 @@ ipcMain.handle('get-station-tracks', async (event, trackId) => {
   try {
     console.log(`[Station Request] Received ID: ${trackId} (Type: ${typeof trackId})`);
 
-    // Ensure trackId is a number or numeric string
+
     const id = (typeof trackId === 'object' && trackId !== null) ? trackId.id : trackId;
 
     if (!id || isNaN(id)) {
@@ -887,7 +918,7 @@ ipcMain.handle('get-station-tracks', async (event, trackId) => {
   }
 });
 
-// Initialized at top
+
 
 
 const defaultSettings = {
@@ -1094,7 +1125,7 @@ ipcMain.handle('import-sc-playlists', async (event, profileUrl) => {
 
     const allSCPlaylists = [];
 
-    // 1. Fetch created playlists (standard endpoint)
+
     let playlistsUrl = `https://api-v2.soundcloud.com/users/${userId}/playlists?client_id=${CLIENT_ID}&limit=200&offset=0`;
     while (playlistsUrl && allSCPlaylists.length < 500) {
       try {
@@ -1110,7 +1141,7 @@ ipcMain.handle('import-sc-playlists', async (event, profileUrl) => {
       } catch (e) { console.error('Error fetching created playlists:', e); break; }
     }
 
-    // 2. Fetch created playlists (alternative endpoint)
+
     if (allSCPlaylists.length < 50) {
       let altUrl = `https://api-v2.soundcloud.com/users/${userId}/playlists_without_albums?client_id=${CLIENT_ID}&limit=200&offset=0`;
       while (altUrl && allSCPlaylists.length < 500) {
@@ -1129,7 +1160,7 @@ ipcMain.handle('import-sc-playlists', async (event, profileUrl) => {
       }
     }
 
-    // 3. Fetch liked playlists
+
     let likedPlaylistsUrl = `https://api-v2.soundcloud.com/users/${userId}/playlist_likes?client_id=${CLIENT_ID}&limit=200&offset=0`;
     while (likedPlaylistsUrl && allSCPlaylists.length < 500) {
       try {
@@ -1148,7 +1179,7 @@ ipcMain.handle('import-sc-playlists', async (event, profileUrl) => {
 
     console.log(`[Import] Found ${allSCPlaylists.length} total playlists from SoundCloud`);
 
-    // Read existing playlists
+
     let existingPlaylists = [];
     try {
       const data = fs.readFileSync(PLAYLISTS_FILE, 'utf8');
@@ -1235,7 +1266,7 @@ ipcMain.handle('get-track-likers', async (event, trackId) => {
 ipcMain.handle('get-lyrics', async (event, { artist, title }) => {
   try {
     const query = encodeURIComponent(`${artist} ${title}`.trim());
-    // Increase per_page to allow smarter selection among top 5 results
+
     const searchUrl = `https://genius.com/api/search/multi?per_page=5&q=${query}`;
 
     const headers = {
@@ -1250,7 +1281,7 @@ ipcMain.handle('get-lyrics', async (event, { artist, title }) => {
     const songSection = sections.find(s => s.type === 'song');
     if (!songSection || !songSection.hits || songSection.hits.length === 0) return null;
 
-    // Smart pick: try to find a match where the artist name is actually present
+
     let hits = songSection.hits;
     let bestHit = hits[0]; // Fallback to first hit
 
@@ -1271,8 +1302,7 @@ ipcMain.handle('get-lyrics', async (event, { artist, title }) => {
 
     if (typeof html !== 'string') return null;
 
-    // Try multiple selectors as Genius changes their layout
-    // 1. Data Lyrics Container (Modern)
+
     const regex = /<div[^>]*data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/g;
     let match;
     let text = '';
@@ -1280,7 +1310,7 @@ ipcMain.handle('get-lyrics', async (event, { artist, title }) => {
       text += match[1] + '\n';
     }
 
-    // 2. Old style container (Fallback)
+
     if (!text.trim()) {
       const oldRegex = /<div[^>]*class="lyrics"[^>]*>([\s\S]*?)<\/div>/i;
       const oldMatch = html.match(oldRegex);
@@ -1292,7 +1322,6 @@ ipcMain.handle('get-lyrics', async (event, { artist, title }) => {
       return null;
     }
 
-    // Clean up HTML tags and entities
     text = text
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<p>|<\/p>/gi, '\n')
@@ -1647,7 +1676,65 @@ function createTray() {
   });
 }
 
-// Cleanup function
+function startGoodbyeDPI() {
+  const arch = 'x86_64';
+  let baseDir;
+  if (app.isPackaged) {
+    baseDir = path.join(process.resourcesPath, 'goodbyedpi-0.2.3rc3-2');
+  } else {
+    baseDir = path.join(__dirname, 'goodbyedpi-0.2.3rc3-2');
+  }
+  const exePath = path.join(baseDir, arch, 'goodbyedpi.exe');
+  const blacklist1 = path.join(baseDir, 'russia-blacklist.txt');
+  const blacklist2 = path.join(baseDir, 'russia-youtube.txt');
+
+  if (!fs.existsSync(exePath)) {
+    console.warn('[GoodbyeDPI] Executable not found at:', exePath);
+    return;
+  }
+
+  console.log('[GoodbyeDPI] Starting GoodbyeDPI...');
+
+
+  const args = [
+    '-9',
+    '--blacklist', blacklist1,
+    '--blacklist', blacklist2
+  ];
+
+  try {
+    goodbyeDpiProcess = spawn(exePath, args, {
+      cwd: path.dirname(exePath),
+    });
+
+    goodbyeDpiProcess.stdout.on('data', (data) => {
+      console.log(`[GoodbyeDPI] ${data}`);
+    });
+
+    goodbyeDpiProcess.stderr.on('data', (data) => {
+      console.error(`[GoodbyeDPI] Error: ${data}`);
+    });
+
+    goodbyeDpiProcess.on('close', (code) => {
+      console.log(`[GoodbyeDPI] Process exited with code ${code}`);
+      goodbyeDpiProcess = null;
+    });
+
+    console.log('[GoodbyeDPI] Started successfully with PID:', goodbyeDpiProcess.pid);
+  } catch (error) {
+    console.error('[GoodbyeDPI] Failed to start:', error);
+  }
+}
+
+function stopGoodbyeDPI() {
+  if (goodbyeDpiProcess) {
+    console.log('[GoodbyeDPI] Stopping...');
+    goodbyeDpiProcess.kill();
+    goodbyeDpiProcess = null;
+  }
+}
+
+
 const cleanup = async () => {
   if (retryTimeout) clearTimeout(retryTimeout);
   latestActivity = null;
@@ -1661,6 +1748,8 @@ const cleanup = async () => {
       console.error('[RPC] Cleanup error:', e);
     }
   }
+
+  stopGoodbyeDPI();
 };
 
 app.on('before-quit', async () => {
@@ -1679,6 +1768,7 @@ process.on('SIGTERM', async () => {
 });
 
 app.whenReady().then(async () => {
+  startGoodbyeDPI();
   await getClientId();
   createWindow();
   createTray();
